@@ -10,10 +10,22 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
 import { mainConfig } from './webpack.main.config';
 import { rendererConfig } from './webpack.renderer.config';
+import pkg from './package.json';
 
 const config: ForgeConfig = {
     packagerConfig: {
         asar: true,
+        name: pkg.productName,
+        executableName: pkg.name,
+        appCopyright: `Copyright © ${new Date().getFullYear()} ${pkg.author.name}`,
+        appCategoryType: 'public.app-category.business',
+        win32metadata: {
+            CompanyName: pkg.author.name,
+            FileDescription: pkg.description,
+            ProductName: pkg.productName,
+            InternalName: pkg.productName,
+            OriginalFilename: `${pkg.productName}.exe`,
+        },
     },
     rebuildConfig: {},
     makers: [

@@ -2,7 +2,7 @@
     "name": "manageme",
     "productName": "ManageMe",
     "version": "1.0.0",
-    "description": "My Electron application description",
+    "description": "Your company manager—people, roles, and structure in one place.",
     "main": ".webpack/main",
     "private": true,
     "scripts": {
@@ -15,7 +15,7 @@
     },
     "keywords": [],
     "author": {
-        "name": "aidmet",
+        "name": "Aiden Metcalfe",
         "email": "avaartshop@outlook.com"
     },
     "license": "MIT",
