@@ -808,3 +808,84 @@ body {
 .member-team-label {
     font-weight: 500;
 }
+
+.news-post-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.news-body-input {
+    margin-bottom: 0;
+    min-height: 88px;
+}
+
+.company-news-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.news-list-empty {
+    margin: 0;
+    padding: 16px;
+    background: #f8fafc;
+    border-radius: 12px;
+    color: #64748b;
+    font-size: 14px;
+}
+
+.news-item {
+    padding: 16px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fafafa;
+}
+
+.news-item-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+.news-item-author {
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.news-item-time {
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+}
+
+.news-item-actions {
+    margin-left: auto;
+}
+
+.news-item-body {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.55;
+    color: #334155;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.dash-section--notebook .notebook-textarea {
+    min-height: 200px;
+    resize: vertical;
+    font-family: inherit;
+    line-height: 1.5;
+}
+
+.notebook-save-status {
+    margin: 8px 0 0;
+    min-height: 20px;
+    font-size: 13px;
+    color: #64748b;
+}

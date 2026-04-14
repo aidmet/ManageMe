@@ -20,6 +20,7 @@ import { auth, db } from './firebase';
 import {
     addDoc,
     collection,
+    deleteDoc,
     doc,
     getDoc,
     getDocs,
@@ -40,6 +41,11 @@ type AuthMode = 'signin' | 'signup';
 
 const INVITES_COLLECTION = 'invites';
 const INVITE_EXPIRY_DAYS = 30;
+const COMPANY_NEWS_SUBCOLLECTION = 'news';
+const USER_NOTEBOOKS_COLLECTION = 'userNotebooks';
+const NEWS_BODY_MAX_LENGTH = 6000;
+const NOTEBOOK_MAX_LENGTH = 50000;
+const NOTEBOOK_AUTOSAVE_MS = 900;
 
 type InviteRoleEntry = {
     name: string;
@@ -201,7 +207,10 @@ function friendlyInviteAcceptError(error: unknown): string {
         code === 'failed-precondition' ||
         code === 'aborted'
     ) {
-        return friendlyFirestoreError(error, 'Could not join with this invitation.');
+        return friendlyFirestoreError(
+            error,
+            'Could not join with this invitation.'
+        );
     }
     if (error instanceof Error && error.message) {
         return error.message;
@@ -410,9 +419,7 @@ async function resolveUserCompanyId(uid: string): Promise<string | null> {
     return null;
 }
 
-async function getUserCompanySummary(
-    uid: string
-): Promise<{
+async function getUserCompanySummary(uid: string): Promise<{
     companyId: string;
     companyName: string;
     role: string;
@@ -440,8 +447,7 @@ async function getUserCompanySummary(
             : 'your company';
     const employees = normalizeEmployeeList(data.employees);
     const teams = normalizeTeams(data.teams);
-    const ownerUid =
-        typeof data.ownerUid === 'string' ? data.ownerUid : '';
+    const ownerUid = typeof data.ownerUid === 'string' ? data.ownerUid : '';
     const entry = employees.find((e) => e.uid === uid);
     let roleRaw = entry?.role?.trim() ?? '';
     if (!roleRaw && data.ownerUid === uid) {
@@ -578,9 +584,7 @@ async function acceptFirestoreInviteAndJoinCompany(
     });
 
     const actorLabel =
-        user.displayName?.trim() ||
-        user.email?.split('@')[0] ||
-        'Someone';
+        user.displayName?.trim() || user.email?.split('@')[0] || 'Someone';
     const joinedName =
         user.displayName?.trim() || user.email?.split('@')[0] || 'New member';
     if (postJoinAudit) {
@@ -665,7 +669,9 @@ const renderAuth = (): void => {
         'signup-toggle'
     ) as HTMLButtonElement;
     const authForm = document.getElementById('auth-form') as HTMLFormElement;
-    const emailInput = document.getElementById('email-input') as HTMLInputElement;
+    const emailInput = document.getElementById(
+        'email-input'
+    ) as HTMLInputElement;
     const passwordInput = document.getElementById(
         'password-input'
     ) as HTMLInputElement;
@@ -831,7 +837,9 @@ const renderOnboardingProfile = (): void => {
     </main>
 `;
 
-    const profileForm = document.getElementById('profile-form') as HTMLFormElement;
+    const profileForm = document.getElementById(
+        'profile-form'
+    ) as HTMLFormElement;
     const displayNameInput = document.getElementById(
         'display-name-input'
     ) as HTMLInputElement;
@@ -854,7 +862,8 @@ const renderOnboardingProfile = (): void => {
 
         const user = auth.currentUser;
         if (!user) {
-            profileMessage.textContent = 'Session expired. Please sign in again.';
+            profileMessage.textContent =
+                'Session expired. Please sign in again.';
             profileMessage.classList.remove('success');
             profileMessage.classList.add('error');
             return;
@@ -961,7 +970,9 @@ const renderOnboardingCompany = (): void => {
     </main>
 `;
 
-    const companyForm = document.getElementById('company-form') as HTMLFormElement;
+    const companyForm = document.getElementById(
+        'company-form'
+    ) as HTMLFormElement;
     const companyNameInput = document.getElementById(
         'company-name-input'
     ) as HTMLInputElement;
@@ -983,7 +994,8 @@ const renderOnboardingCompany = (): void => {
 
         const user = auth.currentUser;
         if (!user) {
-            companyMessage.textContent = 'Session expired. Please sign in again.';
+            companyMessage.textContent =
+                'Session expired. Please sign in again.';
             companyMessage.classList.remove('success');
             companyMessage.classList.add('error');
             return;
@@ -1077,6 +1089,32 @@ const renderDashboard = async (user: User): Promise<void> => {
           )}</strong> as <strong>${escapeHtml(companyContext.role)}</strong>.</p>`
         : '';
 
+    const companyNewsSectionHtml = companyContext
+        ? `
+                <section class="dash-section">
+                    <h3 class="dash-section-heading">Company news</h3>
+                    <p class="dash-section-hint">Updates everyone in your company can read. Anyone in the company can post a message.</p>
+                    <form id="news-post-form" class="news-post-form">
+                        <label class="sr-only" for="news-body-input">News message</label>
+                        <textarea id="news-body-input" class="form-input form-textarea news-body-input" rows="3" maxlength="${NEWS_BODY_MAX_LENGTH}" placeholder="Share an update with the company…"></textarea>
+                        <button type="submit" id="news-post-btn" class="submit-btn submit-btn--compact">Post</button>
+                    </form>
+                    <p id="news-post-message" class="auth-message dash-role-message" aria-live="polite"></p>
+                    <div id="company-news-list" class="company-news-list" aria-live="polite"></div>
+                </section>
+            `
+        : '';
+
+    const notebookSectionHtml = `
+                <section class="dash-section dash-section--notebook">
+                    <h3 class="dash-section-heading">My notebook</h3>
+                    <p class="dash-section-hint">Private notes only you can see. Your company and teammates cannot open this.</p>
+                    <label class="form-label" for="private-notebook-textarea">Notes</label>
+                    <textarea id="private-notebook-textarea" class="form-input form-textarea notebook-textarea" rows="10" maxlength="${NOTEBOOK_MAX_LENGTH}" placeholder="Jot things down for yourself…" autocomplete="off"></textarea>
+                    <p id="notebook-save-status" class="notebook-save-status" aria-live="polite"></p>
+                </section>
+            `;
+
     const directoryAndOpsHtml = companyContext
         ? `
                 <section class="dash-section">
@@ -1129,7 +1167,8 @@ const renderDashboard = async (user: User): Promise<void> => {
         : '';
 
     const rolesSectionHtml =
-        companyContext && companyContext.isOwner ? `
+        companyContext && companyContext.isOwner
+            ? `
                 <section class="dash-section">
                 <div class="dash-roles-card" id="dash-roles-section">
                     <h3 class="dash-roles-title">Roles for invitations</h3>
@@ -1187,6 +1226,8 @@ const renderDashboard = async (user: User): Promise<void> => {
                     <h2 class="dash-placeholder-title">Dashboard</h2>
                     ${membershipHtml}
                 </section>
+                ${companyNewsSectionHtml}
+                ${notebookSectionHtml}
                 ${directoryAndOpsHtml}
                 ${rolesSectionHtml}
                 ${auditSectionHtml}
@@ -1358,7 +1399,9 @@ const renderDashboard = async (user: User): Promise<void> => {
     const directoryTbody = document.getElementById(
         'directory-tbody'
     ) as HTMLTableSectionElement | null;
-    const teamListEl = document.getElementById('team-list') as HTMLUListElement | null;
+    const teamListEl = document.getElementById(
+        'team-list'
+    ) as HTMLUListElement | null;
     const newTeamNameInput = document.getElementById(
         'new-team-name-input'
     ) as HTMLInputElement | null;
@@ -1371,6 +1414,27 @@ const renderDashboard = async (user: User): Promise<void> => {
     const auditLogListEl = document.getElementById(
         'audit-log-list'
     ) as HTMLUListElement | null;
+    const companyNewsListEl = document.getElementById(
+        'company-news-list'
+    ) as HTMLDivElement | null;
+    const newsPostForm = document.getElementById(
+        'news-post-form'
+    ) as HTMLFormElement | null;
+    const newsBodyInput = document.getElementById(
+        'news-body-input'
+    ) as HTMLTextAreaElement | null;
+    const newsPostBtn = document.getElementById(
+        'news-post-btn'
+    ) as HTMLButtonElement | null;
+    const newsPostMessage = document.getElementById(
+        'news-post-message'
+    ) as HTMLParagraphElement | null;
+    const notebookTextarea = document.getElementById(
+        'private-notebook-textarea'
+    ) as HTMLTextAreaElement | null;
+    const notebookSaveStatus = document.getElementById(
+        'notebook-save-status'
+    ) as HTMLParagraphElement | null;
     const memberEditModalEl = document.getElementById(
         'member-edit-modal'
     ) as HTMLDivElement | null;
@@ -1401,9 +1465,7 @@ const renderDashboard = async (user: User): Promise<void> => {
 
     let editingMemberUid: string | null = null;
 
-    const refreshAuditLogFromDocs = (
-        docs: QueryDocumentSnapshot[]
-    ): void => {
+    const refreshAuditLogFromDocs = (docs: QueryDocumentSnapshot[]): void => {
         if (!auditLogListEl) {
             return;
         }
@@ -1416,18 +1478,46 @@ const renderDashboard = async (user: User): Promise<void> => {
             .map((d) => {
                 const x = d.data();
                 const when = auditTimestampLabel(x.createdAt);
-                const summary =
-                    typeof x.summary === 'string' ? x.summary : '';
+                const summary = typeof x.summary === 'string' ? x.summary : '';
                 const actor =
-                    typeof x.actorLabel === 'string'
-                        ? x.actorLabel
-                        : 'Someone';
+                    typeof x.actorLabel === 'string' ? x.actorLabel : 'Someone';
                 const detailRaw =
                     typeof x.detail === 'string' ? x.detail.trim() : '';
                 const detail = detailRaw
                     ? `<div class="audit-log-detail">${escapeHtml(detailRaw)}</div>`
                     : '';
                 return `<li class="audit-log-item"><div class="audit-log-meta"><span class="audit-log-time">${escapeHtml(when)}</span><span class="audit-log-actor">${escapeHtml(actor)}</span></div><div class="audit-log-summary">${escapeHtml(summary)}</div>${detail}</li>`;
+            })
+            .join('');
+    };
+
+    const refreshCompanyNewsFromDocs = (
+        docs: QueryDocumentSnapshot[]
+    ): void => {
+        if (!companyNewsListEl) {
+            return;
+        }
+        if (docs.length === 0) {
+            companyNewsListEl.innerHTML =
+                '<p class="news-list-empty">No posts yet. Share the first update above.</p>';
+            return;
+        }
+        companyNewsListEl.innerHTML = docs
+            .map((d) => {
+                const x = d.data();
+                const when = auditTimestampLabel(x.createdAt);
+                const body = typeof x.body === 'string' ? x.body : '';
+                const author =
+                    typeof x.authorLabel === 'string'
+                        ? x.authorLabel
+                        : 'Someone';
+                const authorUid =
+                    typeof x.authorUid === 'string' ? x.authorUid : '';
+                const del =
+                    authorUid === user.uid
+                        ? `<button type="button" class="btn-text btn-text--danger news-delete-btn" data-news-id="${d.id}">Delete</button>`
+                        : '';
+                return `<article class="news-item"><header class="news-item-header"><span class="news-item-author">${escapeHtml(author)}</span><span class="news-item-time">${escapeHtml(when)}</span>${del ? `<span class="news-item-actions">${del}</span>` : ''}</header><div class="news-item-body">${escapeHtml(body)}</div></article>`;
             })
             .join('');
     };
@@ -1454,9 +1544,7 @@ const renderDashboard = async (user: User): Promise<void> => {
                     e.status ?? 'active'
                 ).toLowerCase();
                 const teamStr = (e.teamIds ?? [])
-                    .map((id) =>
-                        teamNameById(latestTeams, id).toLowerCase()
-                    )
+                    .map((id) => teamNameById(latestTeams, id).toLowerCase())
                     .join(' ');
                 return (
                     nm.includes(q) ||
@@ -1634,7 +1722,9 @@ const renderDashboard = async (user: User): Promise<void> => {
                     teamFormMessage.classList.add('error');
                     return;
                 }
-                const id = crypto.randomUUID();
+                const id = (
+                    globalThis.crypto as Crypto & { randomUUID(): string }
+                ).randomUUID();
                 const next = [...current, { id, name }];
                 await updateDoc(companyRef, { teams: next });
                 newTeamNameInput.value = '';
@@ -1674,9 +1764,7 @@ const renderDashboard = async (user: User): Promise<void> => {
             ) as HTMLButtonElement | null;
             const companyRef = doc(db, 'companies', companyContext.companyId);
             const actorLabel =
-                user.displayName?.trim() ||
-                user.email?.split('@')[0] ||
-                'User';
+                user.displayName?.trim() || user.email?.split('@')[0] || 'User';
 
             if (renameBtn) {
                 const tid = renameBtn.getAttribute('data-team-rename');
@@ -1867,13 +1955,12 @@ const renderDashboard = async (user: User): Promise<void> => {
                         /* best-effort */
                     }
                 }
-                if (
-                    !teamIdsEqual(before.teamIds ?? [], newTeamIds)
-                ) {
+                if (!teamIdsEqual(before.teamIds ?? [], newTeamIds)) {
                     const fmt = (ids: string[]) =>
                         ids.length === 0
                             ? 'None'
-                            : ids.map((id) => teamNameById(latestTeams, id))
+                            : ids
+                                  .map((id) => teamNameById(latestTeams, id))
                                   .join(', ');
                     try {
                         await appendAuditEvent(companyContext.companyId, {
@@ -1900,11 +1987,161 @@ const renderDashboard = async (user: User): Promise<void> => {
         });
     }
 
+    if (
+        companyContext &&
+        newsPostForm &&
+        newsBodyInput &&
+        newsPostBtn &&
+        newsPostMessage &&
+        companyNewsListEl
+    ) {
+        newsPostForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const body = newsBodyInput.value.trim();
+            newsPostMessage.classList.remove('success', 'error');
+            newsPostMessage.textContent = '';
+            if (!body) {
+                newsPostMessage.textContent = 'Write something before posting.';
+                newsPostMessage.classList.add('error');
+                return;
+            }
+            const actorLabel =
+                user.displayName?.trim() ||
+                user.email?.split('@')[0] ||
+                'Member';
+            newsPostBtn.disabled = true;
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        COMPANY_NEWS_SUBCOLLECTION
+                    ),
+                    {
+                        authorUid: user.uid,
+                        authorLabel: actorLabel,
+                        body,
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                const preview =
+                    body.length > 180 ? `${body.slice(0, 180).trim()}…` : body;
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'news_posted',
+                        summary: `${actorLabel} posted company news`,
+                        detail: preview,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                newsBodyInput.value = '';
+                newsPostMessage.textContent = 'Posted.';
+                newsPostMessage.classList.add('success');
+            } catch (err) {
+                newsPostMessage.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not post. Try again.'
+                );
+                newsPostMessage.classList.add('error');
+            } finally {
+                newsPostBtn.disabled = false;
+            }
+        });
+
+        companyNewsListEl.addEventListener('click', async (ev) => {
+            const btn = (ev.target as HTMLElement).closest(
+                'button[data-news-id]'
+            ) as HTMLButtonElement | null;
+            if (!btn) {
+                return;
+            }
+            const id = btn.getAttribute('data-news-id');
+            if (!id || !window.confirm('Remove this post from company news?')) {
+                return;
+            }
+            const newsRef = doc(
+                db,
+                'companies',
+                companyContext.companyId,
+                COMPANY_NEWS_SUBCOLLECTION,
+                id
+            );
+            try {
+                const snap = await getDoc(newsRef);
+                if (!snap.exists()) {
+                    window.alert('That post is already gone.');
+                    return;
+                }
+                const data = snap.data();
+                const prevBody =
+                    typeof data?.body === 'string' ? data.body : '';
+                await deleteDoc(newsRef);
+                const delActorLabel =
+                    user.displayName?.trim() ||
+                    user.email?.split('@')[0] ||
+                    'Member';
+                const delPreview =
+                    prevBody.length > 180
+                        ? `${prevBody.slice(0, 180).trim()}…`
+                        : prevBody;
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel: delActorLabel,
+                        action: 'news_deleted',
+                        summary: `${delActorLabel} removed a company news post`,
+                        detail: delPreview || undefined,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+            } catch (err) {
+                window.alert(
+                    friendlyFirestoreError(err, 'Could not delete that post.')
+                );
+            }
+        });
+    }
+
+    const notebookRef = doc(db, USER_NOTEBOOKS_COLLECTION, user.uid);
+    let notebookSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    if (notebookTextarea && notebookSaveStatus) {
+        notebookTextarea.addEventListener('input', () => {
+            notebookSaveStatus.textContent = '';
+            clearTimeout(notebookSaveTimer);
+            notebookSaveTimer = setTimeout(async () => {
+                const text = notebookTextarea.value;
+                notebookSaveStatus.textContent = 'Saving…';
+                try {
+                    await setDoc(
+                        notebookRef,
+                        {
+                            content: text,
+                            updatedAt: serverTimestamp(),
+                        },
+                        { merge: true }
+                    );
+                    notebookSaveStatus.textContent = 'Saved';
+                } catch (err) {
+                    notebookSaveStatus.textContent = friendlyFirestoreError(
+                        err,
+                        'Could not save notes.'
+                    );
+                }
+            }, NOTEBOOK_AUTOSAVE_MS);
+        });
+    }
+
+    const dashboardUnsubs: Unsubscribe[] = [];
+
     if (companyContext) {
         const companyRef = doc(db, 'companies', companyContext.companyId);
-        const unsubs: Unsubscribe[] = [];
 
-        unsubs.push(
+        dashboardUnsubs.push(
             onSnapshot(companyRef, (snap) => {
                 if (!snap.exists()) {
                     return;
@@ -1918,10 +2155,7 @@ const renderDashboard = async (user: User): Promise<void> => {
                 if (companyContext.isOwner) {
                     refreshDashRoleList(latestInviteRoleEntries);
                 }
-                fillInviteRoleSelect(
-                    inviteRoleSelect,
-                    latestInviteRoleEntries
-                );
+                fillInviteRoleSelect(inviteRoleSelect, latestInviteRoleEntries);
                 refreshDirectoryTable();
                 refreshTeamList();
             })
@@ -1932,16 +2166,49 @@ const renderDashboard = async (user: User): Promise<void> => {
             orderBy('createdAt', 'desc'),
             limit(50)
         );
-        unsubs.push(
+        dashboardUnsubs.push(
             onSnapshot(auditQ, (snap) => {
                 refreshAuditLogFromDocs(snap.docs);
             })
         );
 
-        dashboardListenersCleanup = () => {
-            unsubs.forEach((u) => u());
-        };
+        const newsQ = query(
+            collection(
+                db,
+                'companies',
+                companyContext.companyId,
+                COMPANY_NEWS_SUBCOLLECTION
+            ),
+            orderBy('createdAt', 'desc'),
+            limit(50)
+        );
+        dashboardUnsubs.push(
+            onSnapshot(newsQ, (snap) => {
+                refreshCompanyNewsFromDocs(snap.docs);
+            })
+        );
     }
+
+    dashboardUnsubs.push(
+        onSnapshot(notebookRef, (snap) => {
+            const content = snap.exists()
+                ? String(snap.data()?.content ?? '')
+                : '';
+            if (!notebookTextarea) {
+                return;
+            }
+            if (document.activeElement === notebookTextarea) {
+                return;
+            }
+            if (notebookTextarea.value !== content) {
+                notebookTextarea.value = content;
+            }
+        })
+    );
+
+    dashboardListenersCleanup = () => {
+        dashboardUnsubs.forEach((u) => u());
+    };
 
     const closeMenu = (): void => {
         settingsMenu.hidden = true;
@@ -2114,9 +2381,12 @@ const renderDashboard = async (user: User): Promise<void> => {
             const expiryMs =
                 Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
             const expiresAt = Timestamp.fromMillis(expiryMs);
-            const expiryLabel = new Date(expiryMs).toLocaleDateString(undefined, {
-                dateStyle: 'medium',
-            });
+            const expiryLabel = new Date(expiryMs).toLocaleDateString(
+                undefined,
+                {
+                    dateStyle: 'medium',
+                }
+            );
 
             const docRef = await addDoc(collection(db, INVITES_COLLECTION), {
                 companyId,
@@ -2129,9 +2399,7 @@ const renderDashboard = async (user: User): Promise<void> => {
             });
 
             const invActor =
-                user.displayName?.trim() ||
-                user.email?.split('@')[0] ||
-                'User';
+                user.displayName?.trim() || user.email?.split('@')[0] || 'User';
             try {
                 await appendAuditEvent(companyId, {
                     actorUid: user.uid,
