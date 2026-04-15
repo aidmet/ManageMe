@@ -1,0 +1,89 @@
+# Manual release: Actions → this workflow → Run workflow.
+# Bump package.json version (and commit + push) before running.
+#
+# 1) ensure-release: creates a draft GitHub Release for v<version> if missing
+#    (so matrix jobs only upload assets; no parallel "create release" races).
+# 2) publish: each OS runs electron-forge publish and attaches its artifacts.
+
+name: Publish release
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+    ensure-release:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+
+            - name: Ensure GitHub release exists
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -e
+                  VERSION=$(node -p "require('./package.json').version")
+                  TAG="v${VERSION}"
+                  if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+                    echo "Release $TAG already exists."
+                  else
+                    echo "Creating draft release $TAG..."
+                    gh release create "$TAG" \
+                      --repo "${{ github.repository }}" \
+                      --title "$TAG" \
+                      --draft \
+                      --notes "Artifacts are uploaded by the publish jobs below."
+                  fi
+
+    publish:
+        needs: ensure-release
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, windows-latest, macos-latest]
+        runs-on: ${{ matrix.os }}
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+                  cache: 'npm'
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Install Linux packaging dependencies
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y --no-install-recommends \
+                    build-essential \
+                    fakeroot \
+                    dpkg \
+                    rpm
+
+            - name: Check Linux packaging tools
+              if: runner.os == 'Linux'
+              run: |
+                  which strip
+                  strip --version
+                  dpkg --version
+                  fakeroot -v
+                  rpmbuild --version
+
+            - name: Publish to GitHub Releases
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: npm run publish
