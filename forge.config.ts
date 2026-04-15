@@ -13,6 +13,9 @@ import { mainConfig } from './webpack.main.config';
 import { rendererConfig } from './webpack.renderer.config';
 import pkg from './package.json';
 
+const APP_HOMEPAGE = 'https://github.com/aidmet/ManageMe';
+const DEB_MAINTAINER = `${pkg.author.name} <${pkg.author.email}>`;
+
 const config: ForgeConfig = {
     publishers: [
         new PublisherGithub({
@@ -27,6 +30,7 @@ const config: ForgeConfig = {
         asar: true,
         name: pkg.productName,
         executableName: pkg.name,
+        icon: './assets/icons/manage_me_logo.ico',
         appCopyright: `Copyright © ${new Date().getFullYear()} ${pkg.author.name}`,
         appCategoryType: 'public.app-category.business',
         win32metadata: {
@@ -39,10 +43,37 @@ const config: ForgeConfig = {
     },
     rebuildConfig: {},
     makers: [
-        new MakerSquirrel({}),
+        new MakerSquirrel({
+            setupExe: `${pkg.productName}Setup.exe`,
+            authors: pkg.author.name,
+            description: pkg.description,
+            setupIcon: './assets/icons/manage_me_logo.ico',
+            loadingGif: './assets/installer/manage_me_loading.gif',
+        }),
         new MakerZIP({}, ['darwin']),
-        new MakerRpm({}),
-        new MakerDeb({}),
+        new MakerRpm({
+            options: {
+                icon: './assets/icons/manage_me_png.png',
+                homepage: APP_HOMEPAGE,
+                license: pkg.license,
+                description: pkg.description,
+                productName: pkg.productName,
+            },
+        }),
+        new MakerDeb({
+            options: {
+                icon: './assets/icons/manage_me_png.png',
+                maintainer: DEB_MAINTAINER,
+                homepage: APP_HOMEPAGE,
+                name: pkg.name,
+                productName: pkg.productName,
+                genericName: pkg.productName,
+                description: pkg.description,
+                productDescription: pkg.description,
+                categories: ['Office'],
+                section: 'utils',
+            },
+        }),
     ],
     plugins: [
         new AutoUnpackNativesPlugin({}),
