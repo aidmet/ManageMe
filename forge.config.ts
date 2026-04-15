@@ -19,7 +19,8 @@ const config: ForgeConfig = {
             repository: {
                 owner: 'aidmet',
                 name: 'ManageMe'
-            }
+            },
+            generateReleaseNotes: true
         })
     ],
     packagerConfig: {
