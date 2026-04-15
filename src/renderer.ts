@@ -42,6 +42,7 @@ type AuthMode = 'signin' | 'signup';
 const INVITES_COLLECTION = 'invites';
 const INVITE_EXPIRY_DAYS = 30;
 const COMPANY_NEWS_SUBCOLLECTION = 'news';
+const HOLIDAY_REQUESTS_SUBCOLLECTION = 'holidayRequests';
 const USER_NOTEBOOKS_COLLECTION = 'userNotebooks';
 const NEWS_BODY_MAX_LENGTH = 6000;
 const NOTEBOOK_MAX_LENGTH = 50000;
@@ -233,6 +234,19 @@ type CompanyEmployee = {
     displayName?: string | null;
     status?: EmployeeStatus;
     teamIds?: string[];
+    holidayDays?: number | null;
+};
+
+type HolidayRequestStatus = 'pending' | 'approved' | 'rejected';
+
+type HolidayRequestRecord = {
+    id: string;
+    requesterUid: string;
+    requesterLabel: string;
+    days: number;
+    status: HolidayRequestStatus;
+    createdAt: unknown;
+    resolvedAt: unknown;
 };
 
 function normalizeEmployee(raw: unknown): CompanyEmployee | null {
@@ -261,6 +275,11 @@ function normalizeEmployee(raw: unknown): CompanyEmployee | null {
             (id): id is string => typeof id === 'string'
         );
     }
+    const holidayRaw = o.holidayDays;
+    const holidayDays =
+        typeof holidayRaw === 'number' && Number.isFinite(holidayRaw)
+            ? Math.max(0, Math.floor(holidayRaw))
+            : null;
     return {
         uid,
         role,
@@ -269,6 +288,7 @@ function normalizeEmployee(raw: unknown): CompanyEmployee | null {
         displayName,
         status,
         teamIds,
+        holidayDays,
     };
 }
 
@@ -368,6 +388,55 @@ function statusDisplayLabel(s: EmployeeStatus): string {
         return 'Suspended';
     }
     return 'Active';
+}
+
+function holidayStatusLabel(days: number | null | undefined): string {
+    if (typeof days !== 'number' || !Number.isFinite(days)) {
+        return 'Not set';
+    }
+    const whole = Math.max(0, Math.floor(days));
+    return whole === 1 ? '1 day left' : `${whole} days left`;
+}
+
+function normalizeHolidayRequest(
+    id: string,
+    raw: unknown
+): HolidayRequestRecord | null {
+    if (!raw || typeof raw !== 'object') {
+        return null;
+    }
+    const o = raw as Record<string, unknown>;
+    const requesterUid =
+        typeof o.requesterUid === 'string' ? o.requesterUid : '';
+    if (!requesterUid) {
+        return null;
+    }
+    const requesterLabel =
+        typeof o.requesterLabel === 'string' && o.requesterLabel.trim()
+            ? o.requesterLabel.trim()
+            : 'Member';
+    const daysRaw = o.days;
+    const days =
+        typeof daysRaw === 'number' && Number.isFinite(daysRaw)
+            ? Math.max(1, Math.floor(daysRaw))
+            : 0;
+    if (days <= 0) {
+        return null;
+    }
+    const statusRaw = o.status;
+    const status: HolidayRequestStatus =
+        statusRaw === 'approved' || statusRaw === 'rejected'
+            ? statusRaw
+            : 'pending';
+    return {
+        id,
+        requesterUid,
+        requesterLabel,
+        days,
+        status,
+        createdAt: o.createdAt,
+        resolvedAt: o.resolvedAt,
+    };
 }
 
 function roleOptionsForMemberEdit(
@@ -567,6 +636,7 @@ async function acceptFirestoreInviteAndJoinCompany(
             displayName: user.displayName?.trim() || null,
             status: 'active',
             teamIds: [],
+            holidayDays: null,
         };
 
         transaction.update(companyRef, {
@@ -1041,6 +1111,7 @@ const renderOnboardingCompany = (): void => {
                         displayName: user.displayName?.trim() || null,
                         status: 'active',
                         teamIds: [],
+                        holidayDays: null,
                     },
                 ],
                 employeeUids: [user.uid],
@@ -1115,6 +1186,33 @@ const renderDashboard = async (user: User): Promise<void> => {
                 </section>
             `;
 
+    const holidayRequestSectionHtml = companyContext
+        ? `
+                <section class="dash-section">
+                    <h3 class="dash-section-heading">Holiday requests</h3>
+                    <p class="dash-section-hint">Request holiday days from your current balance. This appears once your owner sets your holiday allowance.</p>
+                    <form id="holiday-request-form" class="news-post-form" hidden>
+                        <label class="form-label" for="holiday-request-days">How many days?</label>
+                        <input id="holiday-request-days" class="form-input" type="number" min="1" step="1" placeholder="e.g. 3" />
+                        <button type="submit" id="holiday-request-btn" class="submit-btn submit-btn--compact">Request holiday</button>
+                    </form>
+                    <p id="holiday-balance-message" class="dash-section-hint"></p>
+                    <p id="holiday-request-message" class="auth-message dash-role-message" aria-live="polite"></p>
+                </section>
+            `
+        : '';
+
+    const ownerHolidayRequestsHtml =
+        companyContext && companyContext.isOwner
+            ? `
+                <section class="dash-section">
+                    <h3 class="dash-section-heading">Holiday approvals</h3>
+                    <p class="dash-section-hint">Incoming holiday requests appear here in real time. Approving deducts days from that person's holiday balance.</p>
+                    <ul id="holiday-requests-list" class="audit-log-list" aria-label="Holiday requests"></ul>
+                </section>
+            `
+            : '';
+
     const directoryAndOpsHtml = companyContext
         ? `
                 <section class="dash-section">
@@ -1130,12 +1228,16 @@ const renderDashboard = async (user: User): Promise<void> => {
                                     <th scope="col">Email</th>
                                     <th scope="col">Role</th>
                                     <th scope="col">Status</th>
+                                    <th scope="col">Holiday status</th>
                                     <th scope="col">Teams</th>
                                     <th scope="col"><span class="sr-only">Actions</span></th>
                                 </tr>
                             </thead>
                             <tbody id="directory-tbody"></tbody>
                         </table>
+                    </div>
+                    <div class="directory-export-row">
+                        <button type="button" id="directory-export-btn" class="submit-btn submit-btn--table">Export to CSV</button>
                     </div>
                 </section>
 
@@ -1215,6 +1317,11 @@ const renderDashboard = async (user: User): Promise<void> => {
                             ? ' disabled aria-disabled="true" title="Only Managers, Admins, and High up roles can send invitations."'
                             : ''
                     }>Make an invitation</button>
+                    ${
+                        companyContext?.isOwner
+                            ? '<button type="button" id="manage-holidays-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">Manage holidays</button>'
+                            : ''
+                    }
                     <button type="button" id="sign-out-btn" class="settings-menu-item" role="menuitem">Sign out</button>
                 </div>
             </div>
@@ -1228,8 +1335,10 @@ const renderDashboard = async (user: User): Promise<void> => {
                 </section>
                 ${companyNewsSectionHtml}
                 ${notebookSectionHtml}
+                ${holidayRequestSectionHtml}
                 ${directoryAndOpsHtml}
                 ${rolesSectionHtml}
+                ${ownerHolidayRequestsHtml}
                 ${auditSectionHtml}
                 <p class="dash-placeholder-text">Your company command center will grow here as ManageMe adds more management tools.</p>
             </div>
@@ -1295,6 +1404,19 @@ const renderDashboard = async (user: User): Promise<void> => {
                 <button type="button" id="member-edit-cancel" class="modal-close-btn">Cancel</button>
             </div>
         </div>
+
+        <div id="holiday-manage-modal" class="modal-backdrop" hidden>
+            <div class="modal-card modal-card--wide" role="dialog" aria-modal="true" aria-labelledby="holiday-manage-title">
+                <h2 id="holiday-manage-title" class="modal-title">Manage holidays</h2>
+                <p class="modal-subtitle">Set each person's available holiday days. Save to update balances in Firestore.</p>
+                <form id="holiday-manage-form" class="auth-form modal-form">
+                    <div id="holiday-manage-grid" class="holiday-manage-grid"></div>
+                    <button type="submit" id="holiday-manage-submit" class="submit-btn">Submit</button>
+                </form>
+                <p id="holiday-manage-message" class="auth-message" aria-live="polite"></p>
+                <button type="button" id="holiday-manage-close" class="modal-close-btn">Close</button>
+            </div>
+        </div>
     </div>
 `;
 
@@ -1310,6 +1432,9 @@ const renderDashboard = async (user: User): Promise<void> => {
     const makeInviteBtn = document.getElementById(
         'make-invite-btn'
     ) as HTMLButtonElement;
+    const manageHolidaysBtn = document.getElementById(
+        'manage-holidays-btn'
+    ) as HTMLButtonElement | null;
     const inviteModal = document.getElementById(
         'invite-modal'
     ) as HTMLDivElement;
@@ -1399,6 +1524,9 @@ const renderDashboard = async (user: User): Promise<void> => {
     const directoryTbody = document.getElementById(
         'directory-tbody'
     ) as HTMLTableSectionElement | null;
+    const directoryExportBtn = document.getElementById(
+        'directory-export-btn'
+    ) as HTMLButtonElement | null;
     const teamListEl = document.getElementById(
         'team-list'
     ) as HTMLUListElement | null;
@@ -1462,6 +1590,42 @@ const renderDashboard = async (user: User): Promise<void> => {
     const memberEditSaveBtn = document.getElementById(
         'member-edit-save-btn'
     ) as HTMLButtonElement | null;
+    const holidayManageModal = document.getElementById(
+        'holiday-manage-modal'
+    ) as HTMLDivElement | null;
+    const holidayManageForm = document.getElementById(
+        'holiday-manage-form'
+    ) as HTMLFormElement | null;
+    const holidayManageGrid = document.getElementById(
+        'holiday-manage-grid'
+    ) as HTMLDivElement | null;
+    const holidayManageSubmitBtn = document.getElementById(
+        'holiday-manage-submit'
+    ) as HTMLButtonElement | null;
+    const holidayManageMessage = document.getElementById(
+        'holiday-manage-message'
+    ) as HTMLParagraphElement | null;
+    const holidayManageCloseBtn = document.getElementById(
+        'holiday-manage-close'
+    ) as HTMLButtonElement | null;
+    const holidayRequestForm = document.getElementById(
+        'holiday-request-form'
+    ) as HTMLFormElement | null;
+    const holidayRequestDaysInput = document.getElementById(
+        'holiday-request-days'
+    ) as HTMLInputElement | null;
+    const holidayRequestBtn = document.getElementById(
+        'holiday-request-btn'
+    ) as HTMLButtonElement | null;
+    const holidayRequestMessage = document.getElementById(
+        'holiday-request-message'
+    ) as HTMLParagraphElement | null;
+    const holidayBalanceMessage = document.getElementById(
+        'holiday-balance-message'
+    ) as HTMLParagraphElement | null;
+    const holidayRequestsListEl = document.getElementById(
+        'holiday-requests-list'
+    ) as HTMLUListElement | null;
 
     let editingMemberUid: string | null = null;
 
@@ -1574,12 +1738,73 @@ const renderDashboard = async (user: User): Promise<void> => {
                     .map((id) => escapeHtml(teamNameById(latestTeams, id)))
                     .join(', ');
                 const teamsCell = teamLabels || '—';
+                const holidayCell = escapeHtml(
+                    holidayStatusLabel(e.holidayDays ?? null)
+                );
                 const actionsCell = canEdit
                     ? `<button type="button" class="submit-btn submit-btn--table" data-member-edit="${escapeHtml(e.uid)}">Edit</button>`
                     : '—';
-                return `<tr><td>${name}</td><td>${email}</td><td>${role}</td><td><span class="${stClass}">${stLabel}</span></td><td>${teamsCell}</td><td>${actionsCell}</td></tr>`;
+                return `<tr><td>${name}</td><td>${email}</td><td>${role}</td><td><span class="${stClass}">${stLabel}</span></td><td>${holidayCell}</td><td>${teamsCell}</td><td>${actionsCell}</td></tr>`;
             })
             .join('');
+    };
+
+    const csvCell = (value: string): string => {
+        const needsQuotes = /[",\r\n]/.test(value);
+        const escaped = value.replace(/"/g, '""');
+        return needsQuotes ? `"${escaped}"` : escaped;
+    };
+
+    const exportDirectoryCsv = (): void => {
+        if (!companyContext) {
+            return;
+        }
+        const header = [
+            'Name',
+            'Email',
+            'Role',
+            'Status',
+            'Holiday status',
+            'Teams',
+        ];
+        const rows = [...latestEmployees]
+            .sort((a, b) =>
+                memberDisplayName(a).localeCompare(memberDisplayName(b), undefined, {
+                    sensitivity: 'base',
+                })
+            )
+            .map((emp) => {
+                const teams = (emp.teamIds ?? [])
+                    .map((id) => teamNameById(latestTeams, id))
+                    .join(', ');
+                return [
+                    memberDisplayName(emp),
+                    emp.email?.trim() || '',
+                    formatRoleForDisplay(emp.role),
+                    statusDisplayLabel(emp.status ?? 'active'),
+                    holidayStatusLabel(emp.holidayDays ?? null),
+                    teams,
+                ];
+            });
+        const csv = [header, ...rows]
+            .map((row) => row.map((value) => csvCell(String(value))).join(','))
+            .join('\r\n');
+        const blob = new Blob([`\uFEFF${csv}`], {
+            type: 'text/csv;charset=utf-8;',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const safeCompanyName = companyContext.companyName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        const dateStamp = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `${safeCompanyName || 'company'}-directory-${dateStamp}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
     };
 
     const refreshTeamList = (): void => {
@@ -1598,6 +1823,90 @@ const renderDashboard = async (user: User): Promise<void> => {
                     ? `<span class="team-row-actions"><button type="button" class="btn-text" data-team-rename="${escapeHtml(t.id)}">Rename</button><button type="button" class="btn-text btn-text--danger" data-team-delete="${escapeHtml(t.id)}">Delete</button></span>`
                     : '';
                 return `<li class="team-row"><span class="team-row-name">${escapeHtml(t.name)}</span>${actions}</li>`;
+            })
+            .join('');
+    };
+
+    const refreshHolidayManageGrid = (): void => {
+        if (!holidayManageGrid || !companyContext || !companyContext.isOwner) {
+            return;
+        }
+        const rows = [...latestEmployees].sort((a, b) =>
+            memberDisplayName(a).localeCompare(memberDisplayName(b), undefined, {
+                sensitivity: 'base',
+            })
+        );
+        holidayManageGrid.innerHTML = rows
+            .map((emp) => {
+                const name = escapeHtml(memberDisplayName(emp));
+                const email = escapeHtml(emp.email?.trim() || 'No email');
+                const value =
+                    typeof emp.holidayDays === 'number'
+                        ? String(Math.max(0, Math.floor(emp.holidayDays)))
+                        : '';
+                return `<div class="holiday-manage-row"><div class="holiday-manage-person"><strong>${name}</strong><span>${email}</span></div><input type="number" class="form-input holiday-manage-input" min="0" step="1" value="${value}" data-holiday-uid="${escapeHtml(emp.uid)}" placeholder="0" /></div>`;
+            })
+            .join('');
+    };
+
+    const refreshHolidayRequestAvailability = (): void => {
+        if (!companyContext || !holidayRequestForm || !holidayBalanceMessage) {
+            return;
+        }
+        const me = latestEmployees.find((emp) => emp.uid === user.uid);
+        const hasAllowance =
+            typeof me?.holidayDays === 'number' && Number.isFinite(me.holidayDays);
+        holidayRequestForm.hidden = !hasAllowance;
+        if (!hasAllowance) {
+            holidayBalanceMessage.textContent =
+                'Your owner has not set your holiday allowance yet.';
+            return;
+        }
+        holidayBalanceMessage.textContent = `You currently have ${holidayStatusLabel(
+            me?.holidayDays ?? null
+        )}.`;
+    };
+
+    const refreshHolidayRequestsList = (
+        docs: QueryDocumentSnapshot[]
+    ): void => {
+        if (!holidayRequestsListEl) {
+            return;
+        }
+        const items = docs
+            .map((d) => normalizeHolidayRequest(d.id, d.data()))
+            .filter((x): x is HolidayRequestRecord => x !== null);
+        if (items.length === 0) {
+            holidayRequestsListEl.innerHTML =
+                '<li class="audit-log-empty">No holiday requests yet.</li>';
+            return;
+        }
+        holidayRequestsListEl.innerHTML = items
+            .map((item) => {
+                const when = auditTimestampLabel(item.createdAt);
+                const state =
+                    item.status === 'approved'
+                        ? 'Approved'
+                        : item.status === 'rejected'
+                          ? 'Rejected'
+                          : 'Pending';
+                const actions =
+                    item.status === 'pending'
+                        ? `<span class="team-row-actions"><button type="button" class="btn-text" data-holiday-approve="${escapeHtml(item.id)}">Approve</button><button type="button" class="btn-text btn-text--danger" data-holiday-reject="${escapeHtml(item.id)}">Reject</button></span>`
+                        : '';
+                const resolved =
+                    item.status === 'pending'
+                        ? ''
+                        : `<div class="audit-log-detail">Updated: ${escapeHtml(
+                              auditTimestampLabel(item.resolvedAt)
+                          )}</div>`;
+                return `<li class="audit-log-item"><div class="audit-log-meta"><span class="audit-log-time">${escapeHtml(
+                    when
+                )}</span><span class="audit-log-actor">${escapeHtml(
+                    item.requesterLabel
+                )}</span></div><div class="audit-log-summary">${escapeHtml(
+                    `${item.days} day${item.days === 1 ? '' : 's'} requested · ${state}`
+                )}</div>${resolved}${actions}</li>`;
             })
             .join('');
     };
@@ -1673,6 +1982,9 @@ const renderDashboard = async (user: User): Promise<void> => {
         refreshDirectoryTable();
         directorySearch?.addEventListener('input', () => {
             refreshDirectoryTable();
+        });
+        directoryExportBtn?.addEventListener('click', () => {
+            exportDirectoryCsv();
         });
         directoryTbody.addEventListener('click', (ev) => {
             const btn = (ev.target as HTMLElement).closest(
@@ -2107,6 +2419,205 @@ const renderDashboard = async (user: User): Promise<void> => {
         });
     }
 
+    if (
+        companyContext &&
+        holidayRequestForm &&
+        holidayRequestDaysInput &&
+        holidayRequestBtn &&
+        holidayRequestMessage
+    ) {
+        refreshHolidayRequestAvailability();
+        holidayRequestForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            holidayRequestMessage.textContent = '';
+            holidayRequestMessage.classList.remove('success', 'error');
+            const me = latestEmployees.find((emp) => emp.uid === user.uid);
+            if (
+                !me ||
+                typeof me.holidayDays !== 'number' ||
+                !Number.isFinite(me.holidayDays)
+            ) {
+                holidayRequestMessage.textContent =
+                    'Your holiday allowance is not set yet.';
+                holidayRequestMessage.classList.add('error');
+                return;
+            }
+            const requested = Number(holidayRequestDaysInput.value.trim());
+            if (!Number.isFinite(requested) || requested <= 0) {
+                holidayRequestMessage.textContent =
+                    'Enter a valid number of holiday days.';
+                holidayRequestMessage.classList.add('error');
+                return;
+            }
+            const days = Math.floor(requested);
+            if (days > me.holidayDays) {
+                holidayRequestMessage.textContent =
+                    'That request is bigger than your remaining holiday balance.';
+                holidayRequestMessage.classList.add('error');
+                return;
+            }
+            holidayRequestBtn.disabled = true;
+            try {
+                const actorLabel =
+                    user.displayName?.trim() ||
+                    user.email?.split('@')[0] ||
+                    'Member';
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        HOLIDAY_REQUESTS_SUBCOLLECTION
+                    ),
+                    {
+                        requesterUid: user.uid,
+                        requesterLabel: actorLabel,
+                        days,
+                        status: 'pending',
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                holidayRequestDaysInput.value = '';
+                holidayRequestMessage.textContent =
+                    'Holiday request sent to the owner.';
+                holidayRequestMessage.classList.add('success');
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'holiday_requested',
+                        summary: `${actorLabel} requested ${days} holiday day${
+                            days === 1 ? '' : 's'
+                        }`,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+            } catch (err) {
+                holidayRequestMessage.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not send holiday request.'
+                );
+                holidayRequestMessage.classList.add('error');
+            } finally {
+                holidayRequestBtn.disabled = false;
+            }
+        });
+    }
+
+    if (companyContext?.isOwner && holidayRequestsListEl) {
+        holidayRequestsListEl.addEventListener('click', async (ev) => {
+            const approveBtn = (ev.target as HTMLElement).closest(
+                'button[data-holiday-approve]'
+            ) as HTMLButtonElement | null;
+            const rejectBtn = (ev.target as HTMLElement).closest(
+                'button[data-holiday-reject]'
+            ) as HTMLButtonElement | null;
+            if (!approveBtn && !rejectBtn) {
+                return;
+            }
+            const reqId =
+                approveBtn?.getAttribute('data-holiday-approve') ??
+                rejectBtn?.getAttribute('data-holiday-reject');
+            if (!reqId) {
+                return;
+            }
+            const decision: HolidayRequestStatus = approveBtn
+                ? 'approved'
+                : 'rejected';
+            const actorLabel =
+                user.displayName?.trim() || user.email?.split('@')[0] || 'Owner';
+            const companyRef = doc(db, 'companies', companyContext.companyId);
+            const reqRef = doc(
+                db,
+                'companies',
+                companyContext.companyId,
+                HOLIDAY_REQUESTS_SUBCOLLECTION,
+                reqId
+            );
+            try {
+                await runTransaction(db, async (tx) => {
+                    const [reqSnap, companySnap] = await Promise.all([
+                        tx.get(reqRef),
+                        tx.get(companyRef),
+                    ]);
+                    if (!reqSnap.exists() || !companySnap.exists()) {
+                        throw new Error('This request is no longer available.');
+                    }
+                    const req = normalizeHolidayRequest(reqSnap.id, reqSnap.data());
+                    if (!req) {
+                        throw new Error('This request is invalid.');
+                    }
+                    if (req.status !== 'pending') {
+                        throw new Error('This request has already been processed.');
+                    }
+                    if (decision === 'approved') {
+                        const employees = normalizeEmployeeList(
+                            companySnap.data()?.employees
+                        );
+                        const target = employees.find(
+                            (emp) => emp.uid === req.requesterUid
+                        );
+                        const current =
+                            typeof target?.holidayDays === 'number'
+                                ? target.holidayDays
+                                : null;
+                        if (current === null) {
+                            throw new Error(
+                                'That member does not have a holiday balance set.'
+                            );
+                        }
+                        if (req.days > current) {
+                            throw new Error(
+                                'Request exceeds the member holiday balance.'
+                            );
+                        }
+                        const next = employees.map((emp) =>
+                            emp.uid === req.requesterUid
+                                ? {
+                                      ...emp,
+                                      holidayDays: Math.max(0, current - req.days),
+                                  }
+                                : emp
+                        );
+                        tx.update(companyRef, { employees: next });
+                    }
+                    tx.update(reqRef, {
+                        status: decision,
+                        resolvedAt: serverTimestamp(),
+                        resolvedByUid: user.uid,
+                        resolvedByLabel: actorLabel,
+                    });
+                });
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action:
+                            decision === 'approved'
+                                ? 'holiday_request_approved'
+                                : 'holiday_request_rejected',
+                        summary:
+                            decision === 'approved'
+                                ? 'Approved a holiday request'
+                                : 'Rejected a holiday request',
+                    });
+                } catch {
+                    /* best-effort */
+                }
+            } catch (err) {
+                window.alert(
+                    err instanceof Error
+                        ? err.message
+                        : friendlyFirestoreError(
+                              err,
+                              'Could not update holiday request.'
+                          )
+                );
+            }
+        });
+    }
+
     const notebookRef = doc(db, USER_NOTEBOOKS_COLLECTION, user.uid);
     let notebookSaveTimer: ReturnType<typeof setTimeout> | undefined;
     if (notebookTextarea && notebookSaveStatus) {
@@ -2158,6 +2669,8 @@ const renderDashboard = async (user: User): Promise<void> => {
                 fillInviteRoleSelect(inviteRoleSelect, latestInviteRoleEntries);
                 refreshDirectoryTable();
                 refreshTeamList();
+                refreshHolidayRequestAvailability();
+                refreshHolidayManageGrid();
             })
         );
 
@@ -2187,6 +2700,24 @@ const renderDashboard = async (user: User): Promise<void> => {
                 refreshCompanyNewsFromDocs(snap.docs);
             })
         );
+
+        if (companyContext.isOwner && holidayRequestsListEl) {
+            const holidayQ = query(
+                collection(
+                    db,
+                    'companies',
+                    companyContext.companyId,
+                    HOLIDAY_REQUESTS_SUBCOLLECTION
+                ),
+                orderBy('createdAt', 'desc'),
+                limit(50)
+            );
+            dashboardUnsubs.push(
+                onSnapshot(holidayQ, (snap) => {
+                    refreshHolidayRequestsList(snap.docs);
+                })
+            );
+        }
     }
 
     dashboardUnsubs.push(
@@ -2266,6 +2797,108 @@ const renderDashboard = async (user: User): Promise<void> => {
         }
         openInviteModal();
     });
+
+    const closeHolidayManageModal = (): void => {
+        if (!holidayManageModal || !holidayManageMessage) {
+            return;
+        }
+        holidayManageModal.hidden = true;
+        holidayManageMessage.textContent = '';
+        holidayManageMessage.classList.remove('success', 'error');
+    };
+
+    const openHolidayManageModal = (): void => {
+        if (!holidayManageModal || !companyContext?.isOwner) {
+            return;
+        }
+        closeMenu();
+        refreshHolidayManageGrid();
+        holidayManageModal.hidden = false;
+    };
+
+    manageHolidaysBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openHolidayManageModal();
+    });
+
+    holidayManageCloseBtn?.addEventListener('click', () => {
+        closeHolidayManageModal();
+    });
+
+    holidayManageModal?.addEventListener('click', (e) => {
+        if (e.target === holidayManageModal) {
+            closeHolidayManageModal();
+        }
+    });
+
+    if (
+        companyContext?.isOwner &&
+        holidayManageForm &&
+        holidayManageSubmitBtn &&
+        holidayManageMessage
+    ) {
+        holidayManageForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            holidayManageSubmitBtn.disabled = true;
+            holidayManageMessage.textContent = '';
+            holidayManageMessage.classList.remove('success', 'error');
+            const companyRef = doc(db, 'companies', companyContext.companyId);
+            const values = new Map<string, number>();
+            const inputs = holidayManageForm.querySelectorAll(
+                'input[data-holiday-uid]'
+            );
+            for (const node of inputs) {
+                const input = node as HTMLInputElement;
+                const uid = input.getAttribute('data-holiday-uid');
+                if (!uid) {
+                    continue;
+                }
+                const raw = input.value.trim();
+                const parsed = raw === '' ? 0 : Number(raw);
+                if (!Number.isFinite(parsed) || parsed < 0) {
+                    holidayManageMessage.textContent =
+                        'Use whole numbers 0 or above for holiday days.';
+                    holidayManageMessage.classList.add('error');
+                    holidayManageSubmitBtn.disabled = false;
+                    return;
+                }
+                values.set(uid, Math.floor(parsed));
+            }
+            try {
+                const snap = await getDoc(companyRef);
+                const employees = normalizeEmployeeList(snap.data()?.employees);
+                const next = employees.map((emp) => ({
+                    ...emp,
+                    holidayDays: values.get(emp.uid) ?? 0,
+                }));
+                await updateDoc(companyRef, { employees: next });
+                holidayManageMessage.textContent = 'Holiday balances saved.';
+                holidayManageMessage.classList.add('success');
+                const actorLabel =
+                    user.displayName?.trim() ||
+                    user.email?.split('@')[0] ||
+                    'Owner';
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'holidays_set',
+                        summary: 'Holiday balances were updated',
+                    });
+                } catch {
+                    /* best-effort */
+                }
+            } catch (err) {
+                holidayManageMessage.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not save holiday balances.'
+                );
+                holidayManageMessage.classList.add('error');
+            } finally {
+                holidayManageSubmitBtn.disabled = false;
+            }
+        });
+    }
 
     if (
         companyContext &&
