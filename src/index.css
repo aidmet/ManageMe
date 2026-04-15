@@ -351,6 +351,40 @@ body {
     background: #f1f5f9;
 }
 
+.app-update-toast {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 220;
+    width: min(460px, calc(100vw - 40px));
+    margin: 0;
+    border: 1px solid #dbeafe;
+    box-shadow: 0 20px 48px rgba(15, 23, 42, 0.24);
+}
+
+.app-update-toast-title {
+    margin-bottom: 6px;
+    font-size: 20px;
+}
+
+.app-update-toast-subtitle {
+    margin-bottom: 10px;
+}
+
+.app-update-toast-notes {
+    margin: 0 0 12px;
+}
+
+.app-update-toast-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.app-update-later-btn {
+    margin-top: 0;
+}
+
 .form-select {
     cursor: pointer;
     appearance: none;

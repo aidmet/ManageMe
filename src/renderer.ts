@@ -39,6 +39,22 @@ import type { QueryDocumentSnapshot, Unsubscribe } from 'firebase/firestore';
 
 type AuthMode = 'signin' | 'signup';
 
+type AppUpdatePayload = {
+    releaseName: string;
+    releaseNotes: string;
+};
+
+declare global {
+    interface Window {
+        manageMeDesktop?: {
+            onUpdateReady: (
+                callback: (payload: AppUpdatePayload) => void
+            ) => () => void;
+            installUpdate: () => void;
+        };
+    }
+}
+
 const INVITES_COLLECTION = 'invites';
 const INVITE_EXPIRY_DAYS = 30;
 const COMPANY_NEWS_SUBCOLLECTION = 'news';
@@ -698,6 +714,53 @@ const appRoot = document.getElementById('app');
 if (!appRoot) {
     throw new Error('App root element not found.');
 }
+
+const removeUpdateToast = (): void => {
+    document.getElementById('app-update-toast')?.remove();
+};
+
+const showUpdateToast = (payload: AppUpdatePayload): void => {
+    removeUpdateToast();
+    const releaseLabel = payload.releaseName?.trim() || 'New version';
+    const notes = payload.releaseNotes?.trim() || '';
+    const notePreview =
+        notes.length > 220 ? `${notes.slice(0, 220)}...` : notes;
+    const toast = document.createElement('section');
+    toast.id = 'app-update-toast';
+    toast.className = 'app-update-toast modal-card';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.innerHTML = `
+        <h3 class="modal-title app-update-toast-title">Update ready</h3>
+        <p class="modal-subtitle app-update-toast-subtitle">${escapeHtml(releaseLabel)} has been downloaded.</p>
+        ${
+            notePreview
+                ? `<p class="dash-section-hint app-update-toast-notes">${escapeHtml(notePreview)}</p>`
+                : ''
+        }
+        <div class="app-update-toast-actions">
+            <button type="button" id="app-update-restart-btn" class="submit-btn submit-btn--compact">Restart now</button>
+            <button type="button" id="app-update-later-btn" class="modal-close-btn app-update-later-btn">Later</button>
+        </div>
+    `;
+    document.body.appendChild(toast);
+    const restartBtn = document.getElementById(
+        'app-update-restart-btn'
+    ) as HTMLButtonElement | null;
+    const laterBtn = document.getElementById(
+        'app-update-later-btn'
+    ) as HTMLButtonElement | null;
+    restartBtn?.addEventListener('click', () => {
+        window.manageMeDesktop?.installUpdate();
+    });
+    laterBtn?.addEventListener('click', () => {
+        removeUpdateToast();
+    });
+};
+
+window.manageMeDesktop?.onUpdateReady((payload) => {
+    showUpdateToast(payload);
+});
 
 const renderAuth = (): void => {
     cleanupDashboardListeners();
