@@ -1809,9 +1809,13 @@ const renderDashboard = async (user: User): Promise<void> => {
         ];
         const rows = [...latestEmployees]
             .sort((a, b) =>
-                memberDisplayName(a).localeCompare(memberDisplayName(b), undefined, {
-                    sensitivity: 'base',
-                })
+                memberDisplayName(a).localeCompare(
+                    memberDisplayName(b),
+                    undefined,
+                    {
+                        sensitivity: 'base',
+                    }
+                )
             )
             .map((emp) => {
                 const teams = (emp.teamIds ?? [])
@@ -1872,9 +1876,13 @@ const renderDashboard = async (user: User): Promise<void> => {
             return;
         }
         const rows = [...latestEmployees].sort((a, b) =>
-            memberDisplayName(a).localeCompare(memberDisplayName(b), undefined, {
-                sensitivity: 'base',
-            })
+            memberDisplayName(a).localeCompare(
+                memberDisplayName(b),
+                undefined,
+                {
+                    sensitivity: 'base',
+                }
+            )
         );
         holidayManageGrid.innerHTML = rows
             .map((emp) => {
@@ -1895,7 +1903,8 @@ const renderDashboard = async (user: User): Promise<void> => {
         }
         const me = latestEmployees.find((emp) => emp.uid === user.uid);
         const hasAllowance =
-            typeof me?.holidayDays === 'number' && Number.isFinite(me.holidayDays);
+            typeof me?.holidayDays === 'number' &&
+            Number.isFinite(me.holidayDays);
         holidayRequestForm.hidden = !hasAllowance;
         if (!hasAllowance) {
             holidayBalanceMessage.textContent =
@@ -1962,9 +1971,13 @@ const renderDashboard = async (user: User): Promise<void> => {
                     (emp.status ?? 'active') !== 'offboarded'
             )
             .sort((a, b) =>
-                memberDisplayName(a).localeCompare(memberDisplayName(b), undefined, {
-                    sensitivity: 'base',
-                })
+                memberDisplayName(a).localeCompare(
+                    memberDisplayName(b),
+                    undefined,
+                    {
+                        sensitivity: 'base',
+                    }
+                )
             );
         transferOwnershipSelect.innerHTML =
             '<option value="">Choose a member</option>' +
@@ -2592,7 +2605,9 @@ const renderDashboard = async (user: User): Promise<void> => {
                 ? 'approved'
                 : 'rejected';
             const actorLabel =
-                user.displayName?.trim() || user.email?.split('@')[0] || 'Owner';
+                user.displayName?.trim() ||
+                user.email?.split('@')[0] ||
+                'Owner';
             const companyRef = doc(db, 'companies', companyContext.companyId);
             const reqRef = doc(
                 db,
@@ -2610,12 +2625,17 @@ const renderDashboard = async (user: User): Promise<void> => {
                     if (!reqSnap.exists() || !companySnap.exists()) {
                         throw new Error('This request is no longer available.');
                     }
-                    const req = normalizeHolidayRequest(reqSnap.id, reqSnap.data());
+                    const req = normalizeHolidayRequest(
+                        reqSnap.id,
+                        reqSnap.data()
+                    );
                     if (!req) {
                         throw new Error('This request is invalid.');
                     }
                     if (req.status !== 'pending') {
-                        throw new Error('This request has already been processed.');
+                        throw new Error(
+                            'This request has already been processed.'
+                        );
                     }
                     if (decision === 'approved') {
                         const employees = normalizeEmployeeList(
@@ -2642,7 +2662,10 @@ const renderDashboard = async (user: User): Promise<void> => {
                             emp.uid === req.requesterUid
                                 ? {
                                       ...emp,
-                                      holidayDays: Math.max(0, current - req.days),
+                                      holidayDays: Math.max(
+                                          0,
+                                          current - req.days
+                                      ),
                                   }
                                 : emp
                         );
@@ -2972,9 +2995,13 @@ const renderDashboard = async (user: User): Promise<void> => {
                         );
                     }
                     const employees = normalizeEmployeeList(data.employees);
-                    const target = employees.find((emp) => emp.uid === nextOwnerUid);
+                    const target = employees.find(
+                        (emp) => emp.uid === nextOwnerUid
+                    );
                     if (!target) {
-                        throw new Error('Selected member is no longer available.');
+                        throw new Error(
+                            'Selected member is no longer available.'
+                        );
                     }
                     if ((target.status ?? 'active') === 'offboarded') {
                         throw new Error(
@@ -2996,10 +3023,14 @@ const renderDashboard = async (user: User): Promise<void> => {
                     });
                 });
                 const actorLabel =
-                    user.displayName?.trim() || user.email?.split('@')[0] || 'Owner';
+                    user.displayName?.trim() ||
+                    user.email?.split('@')[0] ||
+                    'Owner';
                 const targetName =
                     memberDisplayName(
-                        latestEmployees.find((e2) => e2.uid === nextOwnerUid) ?? {
+                        latestEmployees.find(
+                            (e2) => e2.uid === nextOwnerUid
+                        ) ?? {
                             uid: nextOwnerUid,
                             role: 'member',
                             invitedForName: 'Member',
