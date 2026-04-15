@@ -1322,6 +1322,11 @@ const renderDashboard = async (user: User): Promise<void> => {
                             ? '<button type="button" id="manage-holidays-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">Manage holidays</button>'
                             : ''
                     }
+                    ${
+                        companyContext?.isOwner
+                            ? '<button type="button" id="transfer-ownership-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">Transfer ownership</button>'
+                            : ''
+                    }
                     <button type="button" id="sign-out-btn" class="settings-menu-item" role="menuitem">Sign out</button>
                 </div>
             </div>
@@ -1417,6 +1422,20 @@ const renderDashboard = async (user: User): Promise<void> => {
                 <button type="button" id="holiday-manage-close" class="modal-close-btn">Close</button>
             </div>
         </div>
+
+        <div id="transfer-ownership-modal" class="modal-backdrop" hidden>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="transfer-ownership-title">
+                <h2 id="transfer-ownership-title" class="modal-title">Transfer ownership</h2>
+                <p class="modal-subtitle">Choose someone in your company to become the new owner. You will be downgraded to Admin.</p>
+                <form id="transfer-ownership-form" class="auth-form modal-form">
+                    <label class="form-label" for="transfer-ownership-select">New owner</label>
+                    <select id="transfer-ownership-select" class="form-input form-select" required></select>
+                    <button type="submit" id="transfer-ownership-submit" class="submit-btn">Transfer ownership</button>
+                </form>
+                <p id="transfer-ownership-message" class="auth-message" aria-live="polite"></p>
+                <button type="button" id="transfer-ownership-close" class="modal-close-btn">Cancel</button>
+            </div>
+        </div>
     </div>
 `;
 
@@ -1434,6 +1453,9 @@ const renderDashboard = async (user: User): Promise<void> => {
     ) as HTMLButtonElement;
     const manageHolidaysBtn = document.getElementById(
         'manage-holidays-btn'
+    ) as HTMLButtonElement | null;
+    const transferOwnershipBtn = document.getElementById(
+        'transfer-ownership-btn'
     ) as HTMLButtonElement | null;
     const inviteModal = document.getElementById(
         'invite-modal'
@@ -1626,6 +1648,24 @@ const renderDashboard = async (user: User): Promise<void> => {
     const holidayRequestsListEl = document.getElementById(
         'holiday-requests-list'
     ) as HTMLUListElement | null;
+    const transferOwnershipModal = document.getElementById(
+        'transfer-ownership-modal'
+    ) as HTMLDivElement | null;
+    const transferOwnershipForm = document.getElementById(
+        'transfer-ownership-form'
+    ) as HTMLFormElement | null;
+    const transferOwnershipSelect = document.getElementById(
+        'transfer-ownership-select'
+    ) as HTMLSelectElement | null;
+    const transferOwnershipSubmit = document.getElementById(
+        'transfer-ownership-submit'
+    ) as HTMLButtonElement | null;
+    const transferOwnershipMessage = document.getElementById(
+        'transfer-ownership-message'
+    ) as HTMLParagraphElement | null;
+    const transferOwnershipClose = document.getElementById(
+        'transfer-ownership-close'
+    ) as HTMLButtonElement | null;
 
     let editingMemberUid: string | null = null;
 
@@ -1909,6 +1949,32 @@ const renderDashboard = async (user: User): Promise<void> => {
                 )}</div>${resolved}${actions}</li>`;
             })
             .join('');
+    };
+
+    const refreshTransferOwnershipOptions = (): void => {
+        if (!transferOwnershipSelect || !companyContext?.isOwner) {
+            return;
+        }
+        const candidates = latestEmployees
+            .filter(
+                (emp) =>
+                    emp.uid !== companyContext.ownerUid &&
+                    (emp.status ?? 'active') !== 'offboarded'
+            )
+            .sort((a, b) =>
+                memberDisplayName(a).localeCompare(memberDisplayName(b), undefined, {
+                    sensitivity: 'base',
+                })
+            );
+        transferOwnershipSelect.innerHTML =
+            '<option value="">Choose a member</option>' +
+            candidates
+                .map((emp) => {
+                    const name = escapeHtml(memberDisplayName(emp));
+                    const email = escapeHtml(emp.email?.trim() || 'No email');
+                    return `<option value="${escapeHtml(emp.uid)}">${name} · ${email}</option>`;
+                })
+                .join('');
     };
 
     const closeMemberEditModal = (): void => {
@@ -2671,6 +2737,7 @@ const renderDashboard = async (user: User): Promise<void> => {
                 refreshTeamList();
                 refreshHolidayRequestAvailability();
                 refreshHolidayManageGrid();
+                refreshTransferOwnershipOptions();
             })
         );
 
@@ -2816,9 +2883,33 @@ const renderDashboard = async (user: User): Promise<void> => {
         holidayManageModal.hidden = false;
     };
 
+    const closeTransferOwnershipModal = (): void => {
+        if (!transferOwnershipModal || !transferOwnershipMessage) {
+            return;
+        }
+        transferOwnershipModal.hidden = true;
+        transferOwnershipMessage.textContent = '';
+        transferOwnershipMessage.classList.remove('success', 'error');
+        transferOwnershipForm?.reset();
+    };
+
+    const openTransferOwnershipModal = (): void => {
+        if (!transferOwnershipModal || !companyContext?.isOwner) {
+            return;
+        }
+        closeMenu();
+        refreshTransferOwnershipOptions();
+        transferOwnershipModal.hidden = false;
+    };
+
     manageHolidaysBtn?.addEventListener('click', (e) => {
         e.stopPropagation();
         openHolidayManageModal();
+    });
+
+    transferOwnershipBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openTransferOwnershipModal();
     });
 
     holidayManageCloseBtn?.addEventListener('click', () => {
@@ -2830,6 +2921,116 @@ const renderDashboard = async (user: User): Promise<void> => {
             closeHolidayManageModal();
         }
     });
+
+    transferOwnershipClose?.addEventListener('click', () => {
+        closeTransferOwnershipModal();
+    });
+
+    transferOwnershipModal?.addEventListener('click', (e) => {
+        if (e.target === transferOwnershipModal) {
+            closeTransferOwnershipModal();
+        }
+    });
+
+    if (
+        companyContext?.isOwner &&
+        transferOwnershipForm &&
+        transferOwnershipSelect &&
+        transferOwnershipSubmit &&
+        transferOwnershipMessage
+    ) {
+        transferOwnershipForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            transferOwnershipMessage.textContent = '';
+            transferOwnershipMessage.classList.remove('success', 'error');
+            const nextOwnerUid = transferOwnershipSelect.value;
+            if (!nextOwnerUid) {
+                transferOwnershipMessage.textContent =
+                    'Choose a member to transfer ownership to.';
+                transferOwnershipMessage.classList.add('error');
+                return;
+            }
+            if (
+                !window.confirm(
+                    'Transfer ownership now? This change takes effect immediately.'
+                )
+            ) {
+                return;
+            }
+            transferOwnershipSubmit.disabled = true;
+            const companyRef = doc(db, 'companies', companyContext.companyId);
+            try {
+                await runTransaction(db, async (tx) => {
+                    const snap = await tx.get(companyRef);
+                    if (!snap.exists()) {
+                        throw new Error('Company not found.');
+                    }
+                    const data = snap.data();
+                    if (data.ownerUid !== user.uid) {
+                        throw new Error(
+                            'Only the current owner can transfer ownership.'
+                        );
+                    }
+                    const employees = normalizeEmployeeList(data.employees);
+                    const target = employees.find((emp) => emp.uid === nextOwnerUid);
+                    if (!target) {
+                        throw new Error('Selected member is no longer available.');
+                    }
+                    if ((target.status ?? 'active') === 'offboarded') {
+                        throw new Error(
+                            'Cannot transfer ownership to an offboarded member.'
+                        );
+                    }
+                    const nextEmployees = employees.map((emp) => {
+                        if (emp.uid === user.uid) {
+                            return { ...emp, role: 'admin', status: 'active' };
+                        }
+                        if (emp.uid === nextOwnerUid) {
+                            return { ...emp, role: 'owner', status: 'active' };
+                        }
+                        return emp;
+                    });
+                    tx.update(companyRef, {
+                        ownerUid: nextOwnerUid,
+                        employees: nextEmployees,
+                    });
+                });
+                const actorLabel =
+                    user.displayName?.trim() || user.email?.split('@')[0] || 'Owner';
+                const targetName =
+                    memberDisplayName(
+                        latestEmployees.find((e2) => e2.uid === nextOwnerUid) ?? {
+                            uid: nextOwnerUid,
+                            role: 'member',
+                            invitedForName: 'Member',
+                        }
+                    ) || 'Member';
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'ownership_transferred',
+                        summary: `Ownership transferred to ${targetName}`,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                closeTransferOwnershipModal();
+                await renderDashboard(user);
+            } catch (err) {
+                transferOwnershipMessage.textContent =
+                    err instanceof Error
+                        ? err.message
+                        : friendlyFirestoreError(
+                              err,
+                              'Could not transfer ownership.'
+                          );
+                transferOwnershipMessage.classList.add('error');
+            } finally {
+                transferOwnershipSubmit.disabled = false;
+            }
+        });
+    }
 
     if (
         companyContext?.isOwner &&
