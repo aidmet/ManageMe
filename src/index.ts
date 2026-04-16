@@ -24,10 +24,16 @@ const createWindow = (): void => {
         width: 1000,
         show: false,
         backgroundColor: '#0f172a',
+        autoHideMenuBar: app.isPackaged,
         webPreferences: {
             preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
+            devTools: !app.isPackaged,
         },
     });
+
+    if (app.isPackaged) {
+        mainWindow.setMenu(null);
+    }
 
     mainWindow.once('ready-to-show', () => {
         mainWindow?.show();
