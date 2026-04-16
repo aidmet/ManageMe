@@ -98,6 +98,10 @@ body {
     text-decoration: none;
 }
 
+.auth-back-from-reset[hidden] {
+    display: none !important;
+}
+
 .auth-back-from-reset:hover {
     text-decoration: underline;
 }
