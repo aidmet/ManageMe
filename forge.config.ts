@@ -49,6 +49,7 @@ const config: ForgeConfig = {
             description: pkg.description,
             setupIcon: './assets/icons/manage_me_logo.ico',
             loadingGif: './assets/installer/manage_me_loading.gif',
+            noMsi: false,
         }),
         new MakerZIP({}, ['darwin']),
         new MakerRpm({
