@@ -63,6 +63,11 @@ body {
     margin: -4px 0 4px;
 }
 
+/* `display: flex` wins over the `hidden` attribute otherwise; keep link off Sign up. */
+.auth-forgot-row[hidden] {
+    display: none !important;
+}
+
 .auth-text-link {
     padding: 0;
     border: none;
