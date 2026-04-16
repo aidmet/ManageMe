@@ -12,6 +12,7 @@ import type { User } from 'firebase/auth';
 import {
     createUserWithEmailAndPassword,
     onAuthStateChanged,
+    sendPasswordResetEmail,
     signInWithEmailAndPassword,
     signOut,
     updateProfile,
@@ -188,6 +189,24 @@ function friendlyAuthError(error: unknown): string {
             return 'This account has been disabled. Contact support.';
         default:
             return 'Something went wrong while signing you in. Please try again.';
+    }
+}
+
+function friendlyPasswordResetError(error: unknown): string {
+    const code = getErrorCode(error);
+    switch (code) {
+        case 'auth/invalid-email':
+            return 'That email does not look valid. Check for typos and try again.';
+        case 'auth/missing-email':
+            return 'Enter the email address for your account.';
+        case 'auth/too-many-requests':
+            return 'Too many reset attempts. Wait a few minutes, then try again.';
+        case 'auth/network-request-failed':
+            return 'We could not reach the server. Check your internet connection.';
+        case 'auth/user-disabled':
+            return 'This account has been disabled. Contact support.';
+        default:
+            return 'We could not send a reset email. Please try again.';
     }
 }
 
@@ -769,32 +788,55 @@ const renderAuth = (): void => {
     <main class="auth-page">
         <section class="auth-card">
             <h1 class="app-title">ManageMe</h1>
-            <p class="auth-subtitle">Your company manager—people, roles, and structure in one place.</p>
+            <p id="auth-tagline" class="auth-subtitle">Your company manager—people, roles, and structure in one place.</p>
+            <p id="auth-reset-hint" class="auth-reset-hint" hidden>Enter your email and we'll send a link to reset your password. Check your inbox and spam folder.</p>
 
-            <div class="auth-toggle" role="tablist" aria-label="Authentication mode">
-                <button id="signin-toggle" class="toggle-btn active" type="button" role="tab" aria-selected="true">
-                    Sign In
-                </button>
-                <button id="signup-toggle" class="toggle-btn" type="button" role="tab" aria-selected="false">
-                    Sign Up
-                </button>
+            <div id="auth-mode-toggle-wrap">
+                <div class="auth-toggle" role="tablist" aria-label="Authentication mode">
+                    <button id="signin-toggle" class="toggle-btn active" type="button" role="tab" aria-selected="true">
+                        Sign In
+                    </button>
+                    <button id="signup-toggle" class="toggle-btn" type="button" role="tab" aria-selected="false">
+                        Sign Up
+                    </button>
+                </div>
             </div>
 
             <form id="auth-form" class="auth-form">
                 <label class="form-label" for="email-input">Email</label>
                 <input id="email-input" class="form-input" type="email" autocomplete="email" placeholder="you@example.com" required />
 
-                <label class="form-label" for="password-input">Password</label>
-                <input id="password-input" class="form-input" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+                <div id="password-field-wrap">
+                    <label class="form-label" for="password-input">Password</label>
+                    <input id="password-input" class="form-input" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+                </div>
+
+                <div id="forgot-password-row" class="auth-forgot-row">
+                    <button type="button" id="forgot-password-btn" class="auth-text-link">
+                        Forgot password?
+                    </button>
+                </div>
 
                 <button id="submit-btn" class="submit-btn" type="submit">Sign In</button>
             </form>
 
             <p id="auth-message" class="auth-message" aria-live="polite"></p>
+            <button type="button" id="back-from-reset-btn" class="auth-text-link auth-back-from-reset" hidden>
+                Back to sign in
+            </button>
         </section>
     </main>
 `;
 
+    const authTagline = document.getElementById(
+        'auth-tagline'
+    ) as HTMLParagraphElement;
+    const authResetHint = document.getElementById(
+        'auth-reset-hint'
+    ) as HTMLParagraphElement;
+    const authModeToggleWrap = document.getElementById(
+        'auth-mode-toggle-wrap'
+    ) as HTMLDivElement;
     const signInToggle = document.getElementById(
         'signin-toggle'
     ) as HTMLButtonElement;
@@ -802,6 +844,18 @@ const renderAuth = (): void => {
         'signup-toggle'
     ) as HTMLButtonElement;
     const authForm = document.getElementById('auth-form') as HTMLFormElement;
+    const passwordFieldWrap = document.getElementById(
+        'password-field-wrap'
+    ) as HTMLDivElement;
+    const forgotPasswordRow = document.getElementById(
+        'forgot-password-row'
+    ) as HTMLDivElement;
+    const forgotPasswordBtn = document.getElementById(
+        'forgot-password-btn'
+    ) as HTMLButtonElement;
+    const backFromResetBtn = document.getElementById(
+        'back-from-reset-btn'
+    ) as HTMLButtonElement;
     const emailInput = document.getElementById(
         'email-input'
     ) as HTMLInputElement;
@@ -816,8 +870,37 @@ const renderAuth = (): void => {
     ) as HTMLParagraphElement;
 
     let currentMode: AuthMode = 'signin';
+    let showPasswordReset = false;
+
+    const updateIdleSubmitLabel = (): void => {
+        if (showPasswordReset) {
+            submitButton.textContent = 'Send reset link';
+            return;
+        }
+        submitButton.textContent =
+            currentMode === 'signin' ? 'Sign In' : 'Sign Up';
+    };
+
+    const paintAuthChrome = (): void => {
+        const isSignIn = currentMode === 'signin';
+
+        authModeToggleWrap.hidden = showPasswordReset;
+        authTagline.hidden = showPasswordReset;
+        authResetHint.hidden = !showPasswordReset;
+        passwordFieldWrap.hidden = showPasswordReset;
+        forgotPasswordRow.hidden = showPasswordReset || !isSignIn;
+        backFromResetBtn.hidden = !showPasswordReset;
+        passwordInput.required = !showPasswordReset;
+
+        if (!showPasswordReset) {
+            passwordInput.autocomplete = isSignIn
+                ? 'current-password'
+                : 'new-password';
+        }
+    };
 
     const setMode = (mode: AuthMode): void => {
+        showPasswordReset = false;
         currentMode = mode;
         const isSignIn = mode === 'signin';
 
@@ -826,12 +909,29 @@ const renderAuth = (): void => {
         signInToggle.setAttribute('aria-selected', String(isSignIn));
         signUpToggle.setAttribute('aria-selected', String(!isSignIn));
 
-        submitButton.textContent = isSignIn ? 'Sign In' : 'Sign Up';
-        passwordInput.autocomplete = isSignIn
-            ? 'current-password'
-            : 'new-password';
         authMessage.textContent = '';
         authMessage.classList.remove('success', 'error');
+        paintAuthChrome();
+        updateIdleSubmitLabel();
+    };
+
+    const enterPasswordReset = (): void => {
+        showPasswordReset = true;
+        currentMode = 'signin';
+        signInToggle.classList.add('active');
+        signUpToggle.classList.remove('active');
+        signInToggle.setAttribute('aria-selected', 'true');
+        signUpToggle.setAttribute('aria-selected', 'false');
+        passwordInput.value = '';
+        authMessage.textContent = '';
+        authMessage.classList.remove('success', 'error');
+        paintAuthChrome();
+        updateIdleSubmitLabel();
+        emailInput.focus();
+    };
+
+    const leavePasswordReset = (): void => {
+        setMode('signin');
     };
 
     const setStatus = (message: string, type: 'success' | 'error'): void => {
@@ -842,23 +942,58 @@ const renderAuth = (): void => {
 
     const setLoading = (isLoading: boolean): void => {
         submitButton.disabled = isLoading;
-        submitButton.textContent = isLoading
-            ? currentMode === 'signin'
-                ? 'Signing In...'
-                : 'Signing Up...'
-            : currentMode === 'signin'
-              ? 'Sign In'
-              : 'Sign Up';
+        forgotPasswordBtn.disabled = isLoading;
+        backFromResetBtn.disabled = isLoading;
+        if (isLoading) {
+            submitButton.textContent = showPasswordReset
+                ? 'Sending...'
+                : currentMode === 'signin'
+                  ? 'Signing In...'
+                  : 'Signing Up...';
+            return;
+        }
+        updateIdleSubmitLabel();
     };
 
     signInToggle.addEventListener('click', () => setMode('signin'));
     signUpToggle.addEventListener('click', () => setMode('signup'));
+    forgotPasswordBtn.addEventListener('click', () => enterPasswordReset());
+    backFromResetBtn.addEventListener('click', () => leavePasswordReset());
 
     authForm.addEventListener('submit', async (event) => {
         event.preventDefault();
 
         const email = emailInput.value.trim();
         const password = passwordInput.value.trim();
+
+        if (showPasswordReset) {
+            if (!email) {
+                setStatus('Enter the email address for your account.', 'error');
+                return;
+            }
+            setLoading(true);
+            authMessage.textContent = '';
+            authMessage.classList.remove('success', 'error');
+            try {
+                await sendPasswordResetEmail(auth, email);
+                setStatus(
+                    'If an account exists for that email, we sent password reset instructions. Check your inbox and spam folder.',
+                    'success'
+                );
+            } catch (error) {
+                if (getErrorCode(error) === 'auth/user-not-found') {
+                    setStatus(
+                        'If an account exists for that email, we sent password reset instructions. Check your inbox and spam folder.',
+                        'success'
+                    );
+                } else {
+                    setStatus(friendlyPasswordResetError(error), 'error');
+                }
+            } finally {
+                setLoading(false);
+            }
+            return;
+        }
 
         if (!email || !password) {
             setStatus('Please provide both email and password.', 'error');

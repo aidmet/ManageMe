@@ -49,6 +49,54 @@ body {
     color: #475569;
 }
 
+.auth-reset-hint {
+    margin: 0 0 20px;
+    text-align: center;
+    color: #475569;
+    font-size: 15px;
+    line-height: 1.45;
+}
+
+.auth-forgot-row {
+    display: flex;
+    justify-content: flex-end;
+    margin: -4px 0 4px;
+}
+
+.auth-text-link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: #1d4ed8;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.auth-text-link:hover {
+    color: #1e40af;
+}
+
+.auth-text-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.auth-back-from-reset {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+    text-align: center;
+    text-decoration: none;
+}
+
+.auth-back-from-reset:hover {
+    text-decoration: underline;
+}
+
 .auth-toggle {
     display: grid;
     grid-template-columns: 1fr 1fr;
