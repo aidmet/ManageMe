@@ -1017,6 +1017,82 @@ body {
     word-break: break-word;
 }
 
+.dm-thread {
+    max-height: 280px;
+    overflow-y: auto;
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.dm-thread-empty {
+    margin: 0;
+    font-size: 14px;
+    color: #64748b;
+}
+
+.dm-send-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.dm-body-input {
+    margin-bottom: 0;
+    min-height: 72px;
+}
+
+.dm-row {
+    max-width: min(100%, 420px);
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+}
+
+.dm-row--mine {
+    align-self: flex-end;
+    background: #eff6ff;
+    border-color: #bfdbfe;
+}
+
+.dm-row--theirs {
+    align-self: flex-start;
+}
+
+.dm-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
+.dm-row-who {
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.dm-row-time {
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+}
+
+.dm-row-body {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #334155;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .meeting-create-form {
     display: flex;
     flex-direction: column;

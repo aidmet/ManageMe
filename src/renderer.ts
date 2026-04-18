@@ -59,6 +59,10 @@ declare global {
             ) => () => void;
             installUpdate: () => void;
             checkForUpdates: () => Promise<CheckForUpdatesResult>;
+            showNativeNotification: (opts: {
+                title: string;
+                body: string;
+            }) => void;
         };
     }
 }
@@ -77,7 +81,38 @@ const MEETING_LOCATION_MAX_LENGTH = 200;
 const MEETING_URL_MAX_LENGTH = 500;
 const MEETING_NOTES_MAX_LENGTH = 2000;
 const MEETINGS_QUERY_LIMIT = 100;
+const MEMBER_MESSAGES_SUBCOLLECTION = 'memberMessages';
+const MEMBER_MESSAGE_BODY_MAX_LENGTH = 4000;
+const DM_THREAD_QUERY_LIMIT = 100;
+const DM_NOTIFICATION_BODY_MAX = 180;
 const WELCOME_COMPANY_NEWS_AUTHOR = 'The ManageMe Team';
+
+function memberMessageDocSortKey(d: QueryDocumentSnapshot): number {
+    const x = d.data().createdAt;
+    if (x instanceof Timestamp) {
+        return x.toMillis();
+    }
+    return 0;
+}
+
+function mergeMemberMessageDocSnapshots(
+    docsOut: QueryDocumentSnapshot[],
+    docsIn: QueryDocumentSnapshot[]
+): QueryDocumentSnapshot[] {
+    const byId = new Map<string, QueryDocumentSnapshot>();
+    for (const d of docsOut) {
+        byId.set(d.id, d);
+    }
+    for (const d of docsIn) {
+        byId.set(d.id, d);
+    }
+    const merged = [...byId.values()].sort(
+        (a, b) => memberMessageDocSortKey(a) - memberMessageDocSortKey(b)
+    );
+    return merged.length > DM_THREAD_QUERY_LIMIT
+        ? merged.slice(-DM_THREAD_QUERY_LIMIT)
+        : merged;
+}
 
 function toDatetimeLocalValue(d: Date): string {
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -1557,6 +1592,26 @@ const renderDashboard = async (user: User): Promise<void> => {
             `
         : '';
 
+    const directMessagesSectionHtml = companyContext
+        ? `
+                <section class="dash-section">
+                    <h3 class="dash-section-heading">Direct messages</h3>
+                    <p class="dash-section-hint">Message one teammate at a time. Only you and that person can read the thread. Enable system notifications for ManageMe to see alerts when the app is open.</p>
+                    <label class="form-label" for="dm-peer-select">Chat with</label>
+                    <select id="dm-peer-select" class="form-input form-select" aria-label="Choose teammate to message">
+                        <option value="">Choose teammate</option>
+                    </select>
+                    <div id="dm-thread" class="dm-thread" aria-live="polite"></div>
+                    <form id="dm-send-form" class="dm-send-form">
+                        <label class="form-label" for="dm-body-input">Message</label>
+                        <textarea id="dm-body-input" class="form-input form-textarea dm-body-input" rows="3" maxlength="${MEMBER_MESSAGE_BODY_MAX_LENGTH}" placeholder="Write a message…" autocomplete="off"></textarea>
+                        <button type="submit" id="dm-send-btn" class="submit-btn submit-btn--compact">Send</button>
+                    </form>
+                    <p id="dm-send-message" class="auth-message dash-role-message" aria-live="polite"></p>
+                </section>
+            `
+        : '';
+
     const notebookSectionHtml = `
                 <section class="dash-section dash-section--notebook">
                     <h3 class="dash-section-heading">My notebook</h3>
@@ -1685,7 +1740,10 @@ const renderDashboard = async (user: User): Promise<void> => {
                 <button type="button" id="settings-btn" class="icon-btn" aria-expanded="false" aria-haspopup="true" aria-controls="settings-menu" title="Settings">
                     <span class="icon-btn-label">Settings</span>
                     <svg class="gear-icon" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
-                        <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.940-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.07.63-.07.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+                        <path
+                            fill="currentColor"
+                            d="M19.14 12.94c0.04-0.31 0.06-0.63 0.06-0.94 0-0.31-0.02-0.63-0.06-0.94l2.03-1.58c0.18-0.14 0.23-0.41 0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39 0.96c-0.5-0.38-1.03-0.7-1.62-0.94l-0.36-2.54c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24 0-0.43 0.17-0.47 0.41l-0.36 2.54c-0.59 0.24-1.13 0.57-1.62 0.94l-2.39-0.96c-0.22-0.08-0.47 0-0.59 0.22L2.74 8.87c-0.12 0.21-0.08 0.47 0.12 0.61l2.03 1.58c-0.04 0.31-0.07 0.63-0.07 0.94s0.02 0.63 0.06 0.94l-2.03 1.58c-0.18 0.14-0.23 0.41-0.12 0.61l1.92 3.32c0.12 0.22 0.37 0.29 0.59 0.22l2.39-0.96c0.5 0.38 1.03 0.7 1.62 0.94l0.36 2.54c0.05 0.24 0.24 0.41 0.48 0.41h3.84c0.24 0 0.44-0.17 0.47-0.41l0.36-2.54c0.59-0.24 1.13-0.56 1.62-0.94l2.39 0.96c0.22 0.08 0.47 0 0.59-0.22l1.92-3.32c0.12-0.22 0.07-0.47-0.12-0.61l-2.01-1.58z M12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
+                        />
                     </svg>
                 </button>
                 <div id="settings-menu" class="settings-menu" role="menu" hidden>
@@ -1721,6 +1779,7 @@ const renderDashboard = async (user: User): Promise<void> => {
                 </section>
                 ${companyNewsSectionHtml}
                 ${meetingsSectionHtml}
+                ${directMessagesSectionHtml}
                 ${notebookSectionHtml}
                 ${holidayRequestSectionHtml}
                 ${directoryAndOpsHtml}
@@ -2141,9 +2200,27 @@ const renderDashboard = async (user: User): Promise<void> => {
     const meetingEditMessageEl = document.getElementById(
         'meeting-edit-message'
     ) as HTMLParagraphElement | null;
+    const dmPeerSelect = document.getElementById(
+        'dm-peer-select'
+    ) as HTMLSelectElement | null;
+    const dmThreadEl = document.getElementById('dm-thread') as HTMLDivElement | null;
+    const dmSendForm = document.getElementById(
+        'dm-send-form'
+    ) as HTMLFormElement | null;
+    const dmBodyInput = document.getElementById(
+        'dm-body-input'
+    ) as HTMLTextAreaElement | null;
+    const dmSendBtn = document.getElementById(
+        'dm-send-btn'
+    ) as HTMLButtonElement | null;
+    const dmSendMessage = document.getElementById(
+        'dm-send-message'
+    ) as HTMLParagraphElement | null;
 
     let editingMemberUid: string | null = null;
     let editingMeetingId: string | null = null;
+    let dmThreadUnsubscribe: Unsubscribe | null = null;
+    let dmSubscribedPeerUid: string | null = null;
 
     const refreshAuditLogFromDocs = (docs: QueryDocumentSnapshot[]): void => {
         if (!auditLogListEl) {
@@ -2248,6 +2325,172 @@ const renderDashboard = async (user: User): Promise<void> => {
                 return `<article class="meeting-item"><header class="meeting-item-header"><h4 class="meeting-item-title">${escapeHtml(title)}</h4>${actions}</header><p class="meeting-item-range">${escapeHtml(range)}</p><p class="meeting-item-organizer">Organizer: ${escapeHtml(organizer)}</p>${locLine}${urlLine}${notesLine}</article>`;
             })
             .join('');
+    };
+
+    const refreshDmThreadFromDocs = (docs: QueryDocumentSnapshot[]): void => {
+        if (!dmThreadEl) {
+            return;
+        }
+        if (docs.length === 0) {
+            dmThreadEl.innerHTML =
+                '<p class="dm-thread-empty">No messages in this conversation yet.</p>';
+            return;
+        }
+        dmThreadEl.innerHTML = docs
+            .map((d) => {
+                const x = d.data();
+                const fromUid =
+                    typeof x.fromUid === 'string' ? x.fromUid : '';
+                const body = typeof x.body === 'string' ? x.body : '';
+                const when = auditTimestampLabel(x.createdAt);
+                const mine = fromUid === user.uid;
+                const rowClass = mine ? 'dm-row dm-row--mine' : 'dm-row dm-row--theirs';
+                const who = mine
+                    ? 'You'
+                    : typeof x.fromLabel === 'string'
+                      ? x.fromLabel
+                      : 'Teammate';
+                return `<div class="${rowClass}"><div class="dm-row-meta"><span class="dm-row-who">${escapeHtml(who)}</span><span class="dm-row-time">${escapeHtml(when)}</span></div><div class="dm-row-body">${escapeHtml(body)}</div></div>`;
+            })
+            .join('');
+        dmThreadEl.scrollTop = dmThreadEl.scrollHeight;
+    };
+
+    const subscribeDmThread = (peerUid: string): void => {
+        if (!companyContext || !dmThreadEl) {
+            return;
+        }
+        const peer = peerUid.trim();
+        dmThreadUnsubscribe?.();
+        dmThreadUnsubscribe = null;
+        dmSubscribedPeerUid = peer || null;
+        if (!peer) {
+            refreshDmThreadFromDocs([]);
+            return;
+        }
+        const msgCol = collection(
+            db,
+            'companies',
+            companyContext.companyId,
+            MEMBER_MESSAGES_SUBCOLLECTION
+        );
+        const qOut = query(
+            msgCol,
+            where('fromUid', '==', user.uid),
+            where('toUid', '==', peer),
+            orderBy('createdAt', 'asc'),
+            limit(DM_THREAD_QUERY_LIMIT)
+        );
+        const qIn = query(
+            msgCol,
+            where('fromUid', '==', peer),
+            where('toUid', '==', user.uid),
+            orderBy('createdAt', 'asc'),
+            limit(DM_THREAD_QUERY_LIMIT)
+        );
+        let docsOut: QueryDocumentSnapshot[] = [];
+        let docsIn: QueryDocumentSnapshot[] = [];
+        const mergeThreadSnapshots = (): void => {
+            refreshDmThreadFromDocs(
+                mergeMemberMessageDocSnapshots(docsOut, docsIn)
+            );
+        };
+        const onThreadSnapError = (err: Error): void => {
+            console.error('DM thread listener error', err);
+        };
+        const unsubOut = onSnapshot(
+            qOut,
+            (snap) => {
+                docsOut = snap.docs;
+                mergeThreadSnapshots();
+            },
+            onThreadSnapError
+        );
+        const unsubIn = onSnapshot(
+            qIn,
+            (snap) => {
+                docsIn = snap.docs;
+                mergeThreadSnapshots();
+            },
+            onThreadSnapError
+        );
+        dmThreadUnsubscribe = () => {
+            unsubOut();
+            unsubIn();
+        };
+    };
+
+    const refreshDmThreadFromServer = async (
+        peerForThread: string
+    ): Promise<void> => {
+        const peer = peerForThread.trim();
+        if (!companyContext || !dmThreadEl || !peer) {
+            return;
+        }
+        const msgCol = collection(
+            db,
+            'companies',
+            companyContext.companyId,
+            MEMBER_MESSAGES_SUBCOLLECTION
+        );
+        const qOut = query(
+            msgCol,
+            where('fromUid', '==', user.uid),
+            where('toUid', '==', peer),
+            orderBy('createdAt', 'asc'),
+            limit(DM_THREAD_QUERY_LIMIT)
+        );
+        const qIn = query(
+            msgCol,
+            where('fromUid', '==', peer),
+            where('toUid', '==', user.uid),
+            orderBy('createdAt', 'asc'),
+            limit(DM_THREAD_QUERY_LIMIT)
+        );
+        try {
+            const [outSnap, inSnap] = await Promise.all([
+                getDocs(qOut),
+                getDocs(qIn),
+            ]);
+            refreshDmThreadFromDocs(
+                mergeMemberMessageDocSnapshots(outSnap.docs, inSnap.docs)
+            );
+        } catch (err) {
+            console.error('DM thread server refresh failed', err);
+        }
+    };
+
+    const fillDmRecipientOptions = (): void => {
+        if (!dmPeerSelect) {
+            return;
+        }
+        const prev = dmPeerSelect.value;
+        dmPeerSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Choose teammate';
+        dmPeerSelect.appendChild(placeholder);
+        for (const e of latestEmployees) {
+            if (e.uid === user.uid) {
+                continue;
+            }
+            if ((e.status ?? 'active') === 'offboarded') {
+                continue;
+            }
+            const opt = document.createElement('option');
+            opt.value = e.uid;
+            opt.textContent = memberDisplayName(e);
+            dmPeerSelect.appendChild(opt);
+        }
+        const stillThere =
+            Boolean(prev) &&
+            [...dmPeerSelect.options].some((o) => o.value === prev);
+        dmPeerSelect.value = stillThere ? prev : '';
+        const selected = dmPeerSelect.value.trim();
+        const subscribedFor = dmSubscribedPeerUid ?? '';
+        if (selected !== subscribedFor) {
+            subscribeDmThread(selected);
+        }
     };
 
     const refreshDirectoryTable = (): void => {
@@ -3638,6 +3881,94 @@ const renderDashboard = async (user: User): Promise<void> => {
         });
     }
 
+    if (
+        companyContext &&
+        dmPeerSelect &&
+        dmSendForm &&
+        dmBodyInput &&
+        dmSendBtn &&
+        dmSendMessage
+    ) {
+        dmPeerSelect.addEventListener('change', () => {
+            dmSubscribedPeerUid = null;
+            subscribeDmThread(dmPeerSelect.value);
+        });
+
+        dmSendForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            dmSendMessage.textContent = '';
+            dmSendMessage.classList.remove('success', 'error');
+            const peerUid = dmPeerSelect.value.trim();
+            if (!peerUid) {
+                dmSendMessage.textContent = 'Choose who to message.';
+                dmSendMessage.classList.add('error');
+                return;
+            }
+            const body = dmBodyInput.value.trim();
+            if (!body) {
+                dmSendMessage.textContent = 'Write a message first.';
+                dmSendMessage.classList.add('error');
+                return;
+            }
+            if (body.length > MEMBER_MESSAGE_BODY_MAX_LENGTH) {
+                dmSendMessage.textContent = 'Message is too long.';
+                dmSendMessage.classList.add('error');
+                return;
+            }
+            const peerEmp = latestEmployees.find((emp) => emp.uid === peerUid);
+            if (!peerEmp) {
+                dmSendMessage.textContent =
+                    'That person is not in your company directory.';
+                dmSendMessage.classList.add('error');
+                return;
+            }
+            if ((peerEmp.status ?? 'active') === 'offboarded') {
+                dmSendMessage.textContent =
+                    'You cannot message someone who is offboarded.';
+                dmSendMessage.classList.add('error');
+                return;
+            }
+            const fromLabel =
+                user.displayName?.trim() ||
+                user.email?.split('@')[0] ||
+                'Member';
+            const toLabel = memberDisplayName(peerEmp);
+            dmSendBtn.disabled = true;
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        MEMBER_MESSAGES_SUBCOLLECTION
+                    ),
+                    {
+                        fromUid: user.uid,
+                        fromLabel,
+                        toUid: peerUid,
+                        toLabel,
+                        body,
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                void refreshDmThreadFromServer(peerUid);
+                dmBodyInput.value = '';
+                dmSendMessage.textContent = 'Sent.';
+                dmSendMessage.classList.add('success');
+            } catch (err) {
+                dmSendMessage.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not send. Try again.'
+                );
+                dmSendMessage.classList.add('error');
+            } finally {
+                dmSendBtn.disabled = false;
+            }
+        });
+
+        fillDmRecipientOptions();
+    }
+
     const dashboardUnsubs: Unsubscribe[] = [];
 
     if (companyContext) {
@@ -3663,6 +3994,7 @@ const renderDashboard = async (user: User): Promise<void> => {
                 refreshHolidayRequestAvailability();
                 refreshHolidayManageGrid();
                 refreshTransferOwnershipOptions();
+                fillDmRecipientOptions();
             })
         );
 
@@ -3707,6 +4039,97 @@ const renderDashboard = async (user: User): Promise<void> => {
             onSnapshot(meetingsQ, (snap) => {
                 refreshMeetingsFromDocs(snap.docs);
             })
+        );
+
+        dashboardUnsubs.push(() => {
+            dmThreadUnsubscribe?.();
+            dmThreadUnsubscribe = null;
+            dmSubscribedPeerUid = null;
+        });
+
+        let dmInboundNotifyReady = false;
+        /** Dedupe toasts when Firestore emits both `added` and `modified` (e.g. serverTimestamp). */
+        const dmNotifiedDocIds = new Set<string>();
+        const DM_NOTIFY_ID_CAP = 250;
+        const rememberDmNotified = (docId: string): void => {
+            if (dmNotifiedDocIds.size >= DM_NOTIFY_ID_CAP) {
+                const drop = Math.floor(DM_NOTIFY_ID_CAP / 2);
+                let i = 0;
+                for (const id of dmNotifiedDocIds) {
+                    dmNotifiedDocIds.delete(id);
+                    i += 1;
+                    if (i >= drop) {
+                        break;
+                    }
+                }
+            }
+            dmNotifiedDocIds.add(docId);
+        };
+        const dmInboundQ = query(
+            collection(
+                db,
+                'companies',
+                companyContext.companyId,
+                MEMBER_MESSAGES_SUBCOLLECTION
+            ),
+            where('toUid', '==', user.uid),
+            orderBy('createdAt', 'desc'),
+            limit(30)
+        );
+        dashboardUnsubs.push(
+            onSnapshot(
+                dmInboundQ,
+                (snap) => {
+                    if (!dmInboundNotifyReady) {
+                        dmInboundNotifyReady = true;
+                        return;
+                    }
+                    for (const change of snap.docChanges()) {
+                        if (change.type !== 'added' && change.type !== 'modified') {
+                            continue;
+                        }
+                        const docSnap = change.doc;
+                        if (dmNotifiedDocIds.has(docSnap.id)) {
+                            continue;
+                        }
+                        const x = docSnap.data();
+                        const fromUid =
+                            typeof x.fromUid === 'string' ? x.fromUid : '';
+                        if (!fromUid || fromUid === user.uid) {
+                            continue;
+                        }
+                        const peerSelected = dmPeerSelect?.value?.trim() ?? '';
+                        if (peerSelected === fromUid) {
+                            void refreshDmThreadFromServer(fromUid);
+                        }
+                        const viewingPeer = peerSelected === fromUid;
+                        if (
+                            typeof document.hasFocus === 'function' &&
+                            document.hasFocus() &&
+                            viewingPeer
+                        ) {
+                            continue;
+                        }
+                        rememberDmNotified(docSnap.id);
+                        const fromLabel =
+                            typeof x.fromLabel === 'string'
+                                ? x.fromLabel
+                                : 'Teammate';
+                        let bodyRaw =
+                            typeof x.body === 'string' ? x.body.trim() : '';
+                        if (bodyRaw.length > DM_NOTIFICATION_BODY_MAX) {
+                            bodyRaw = `${bodyRaw.slice(0, DM_NOTIFICATION_BODY_MAX)}…`;
+                        }
+                        window.manageMeDesktop?.showNativeNotification?.({
+                            title: fromLabel,
+                            body: bodyRaw || 'New message',
+                        });
+                    }
+                },
+                (err) => {
+                    console.error('DM inbound notifications listener error', err);
+                }
+            )
         );
 
         if (companyContext.isOwner && holidayRequestsListEl) {

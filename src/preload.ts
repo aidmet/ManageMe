@@ -25,4 +25,7 @@ contextBridge.exposeInMainWorld('manageMeDesktop', {
         | { ok: false; kind: 'not_packaged' }
         | { ok: false; kind: 'error'; message: string }
     > => ipcRenderer.invoke('app-check-for-updates'),
+    showNativeNotification: (opts: { title: string; body: string }) => {
+        void ipcRenderer.invoke('show-native-notification', opts);
+    },
 });

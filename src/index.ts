@@ -1,4 +1,4 @@
-import { app, autoUpdater, BrowserWindow, ipcMain } from 'electron';
+import { app, autoUpdater, BrowserWindow, ipcMain, Notification } from 'electron';
 import {
     updateElectronApp,
     UpdateSourceType,
@@ -71,6 +71,38 @@ function deliverUpdateReadyToRenderer(payload: {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.on('ready', () => {
+    if (process.platform === 'win32') {
+        app.setAppUserModelId('com.aidmet.manageme');
+    }
+    ipcMain.handle('show-native-notification', (_event, payload: unknown) => {
+        if (!payload || typeof payload !== 'object') {
+            return;
+        }
+        const p = payload as { title?: unknown; body?: unknown };
+        const titleRaw =
+            typeof p.title === 'string' ? p.title.trim().slice(0, 120) : '';
+        const bodyRaw =
+            typeof p.body === 'string' ? p.body.trim().slice(0, 500) : '';
+        const title = titleRaw || 'ManageMe';
+        const body = bodyRaw || 'You have a new message.';
+        try {
+            if (
+                typeof Notification.isSupported === 'function' &&
+                !Notification.isSupported()
+            ) {
+                return;
+            }
+        } catch {
+            /* ignore */
+        }
+        try {
+            const n = new Notification({ title, body });
+            n.show();
+        } catch (err) {
+            console.error('[ManageMe] Native notification failed:', err);
+        }
+    });
+
     ipcMain.handle('app-check-for-updates', async () => {
         if (!app.isPackaged) {
             return { ok: false, kind: 'not_packaged' as const };
