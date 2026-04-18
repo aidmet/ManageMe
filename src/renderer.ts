@@ -77,6 +77,7 @@ const MEETING_LOCATION_MAX_LENGTH = 200;
 const MEETING_URL_MAX_LENGTH = 500;
 const MEETING_NOTES_MAX_LENGTH = 2000;
 const MEETINGS_QUERY_LIMIT = 100;
+const WELCOME_COMPANY_NEWS_AUTHOR = 'The ManageMe Team';
 
 function toDatetimeLocalValue(d: Date): string {
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -114,6 +115,27 @@ function safeHttpUrlForHref(url: string): string | null {
         return t;
     }
     return null;
+}
+
+function buildWelcomeCompanyNewsBody(companyName: string): string {
+    const cn = companyName.trim() || 'your company';
+    return `Welcome to ${cn}! Here is a quick guide to ManageMe.
+
+Company news - Share updates everyone in the company can read. Anyone can post here.
+
+Directory & teams - See who is in your organization, filter with search, and export a CSV. Organize people into teams and assign membership when you edit someone in the directory.
+
+Invitations - Use Settings, then Make an invitation, to add teammates. Share the invitation ID with them before it expires.
+
+Holiday requests - Request time off once your owner sets your holiday allowance.
+
+Meetings - Schedule meetings with start and end times, optional location, and a video link so everyone sees what is coming up.
+
+My notebook - Private notes only you can see.
+
+Settings - Sign out, manage holidays (owners), transfer ownership (owners), and use Check for updates on the sign-in screen to grab the latest app version after we ship fixes.
+
+You are set - invite your team and run the company from one place.`;
 }
 
 type InviteRoleEntry = {
@@ -1422,6 +1444,28 @@ const renderOnboardingCompany = (): void => {
                 employeeUids: [user.uid],
                 inviteRoles: defaultInviteRoleEntries(),
             });
+
+            try {
+                const welcomeBody = buildWelcomeCompanyNewsBody(name);
+                if (welcomeBody.length <= NEWS_BODY_MAX_LENGTH) {
+                    await addDoc(
+                        collection(
+                            db,
+                            'companies',
+                            companyRef.id,
+                            COMPANY_NEWS_SUBCOLLECTION
+                        ),
+                        {
+                            authorUid: user.uid,
+                            authorLabel: WELCOME_COMPANY_NEWS_AUTHOR,
+                            body: welcomeBody,
+                            createdAt: serverTimestamp(),
+                        }
+                    );
+                }
+            } catch {
+                /* best-effort: company still works without the welcome post */
+            }
 
             try {
                 await appendAuditEvent(companyRef.id, {
