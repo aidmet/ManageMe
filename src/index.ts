@@ -46,34 +46,31 @@ const createWindow = (): void => {
     mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 };
 
+function deliverUpdateReadyToRenderer(payload: {
+    releaseName: string;
+    releaseNotes: string;
+}): void {
+    const wc = mainWindow?.webContents;
+    if (!wc || wc.isDestroyed()) {
+        return;
+    }
+    const send = (): void => {
+        if (!wc.isDestroyed()) {
+            wc.send('app-update-ready', payload);
+        }
+    };
+    // Preload must run so ipcRenderer.on('app-update-ready') exists; did-finish-load is safe.
+    if (wc.isLoading()) {
+        wc.once('did-finish-load', send);
+    } else {
+        send();
+    }
+}
+
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.on('ready', () => {
-    // Skip auto-updates during local development runs.
-    if (app.isPackaged) {
-        updateElectronApp({
-            updateSource: {
-                type: UpdateSourceType.ElectronPublicUpdateService,
-                repo: 'aidmet/ManageMe',
-            },
-            // Longer interval reduces clashes with manual "Check for updates" on Windows
-            // (Squirrel: "AutoUpdater process ... is already running").
-            updateInterval: '1 hour',
-            notifyUser: true,
-            onNotifyUser: (info: IUpdateInfo) => {
-                const payload = {
-                    releaseName: info.releaseName,
-                    releaseNotes: info.releaseNotes,
-                };
-                mainWindow?.webContents.send('app-update-ready', payload);
-            },
-        });
-        ipcMain.on('app-install-update', () => {
-            autoUpdater.quitAndInstall();
-        });
-    }
-
     ipcMain.handle('app-check-for-updates', async () => {
         if (!app.isPackaged) {
             return { ok: false, kind: 'not_packaged' as const };
@@ -162,6 +159,30 @@ app.on('ready', () => {
     });
 
     createWindow();
+
+    // Start auto-updates only after the window exists; otherwise onNotifyUser had no target and
+    // the "update ready" IPC was dropped (mainWindow was still null).
+    if (app.isPackaged) {
+        updateElectronApp({
+            updateSource: {
+                type: UpdateSourceType.ElectronPublicUpdateService,
+                repo: 'aidmet/ManageMe',
+            },
+            // Longer interval reduces clashes with manual "Check for updates" on Windows
+            // (Squirrel: "AutoUpdater process ... is already running").
+            updateInterval: '1 hour',
+            notifyUser: true,
+            onNotifyUser: (info: IUpdateInfo) => {
+                deliverUpdateReadyToRenderer({
+                    releaseName: info.releaseName,
+                    releaseNotes: info.releaseNotes,
+                });
+            },
+        });
+        ipcMain.on('app-install-update', () => {
+            autoUpdater.quitAndInstall();
+        });
+    }
 });
 
 // Quit when all windows are closed, except on macOS. There, it's common
