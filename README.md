@@ -19,8 +19,6 @@ Per [SignPath Foundation conditions](https://signpath.org/terms.html), this proj
 - **Reviewers:** external contributions are expected to go through **pull request review** before merge.
 - **Approvers:** maintainers who approve **release** builds for code signing (typically the same people responsible for tags/releases).
 
-If you are the sole maintainer, you act as committer, reviewer, and release approver—update this section if you add collaborators or GitHub Teams.
-
 ## Development
 
 Requirements: **Node.js** (LTS recommended), npm.
