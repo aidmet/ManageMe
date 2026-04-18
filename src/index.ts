@@ -67,6 +67,78 @@ app.on('ready', () => {
             autoUpdater.quitAndInstall();
         });
     }
+
+    ipcMain.handle('app-check-for-updates', async () => {
+        if (!app.isPackaged) {
+            return { ok: false, kind: 'not_packaged' as const };
+        }
+        return await new Promise<
+            | { ok: true; kind: 'no_update' }
+            | { ok: true; kind: 'update_available' }
+            | { ok: false; kind: 'error'; message: string }
+        >((resolve) => {
+            let settled = false;
+            const timeoutMs = 120_000;
+
+            const finish = (
+                result:
+                    | { ok: true; kind: 'no_update' }
+                    | { ok: true; kind: 'update_available' }
+                    | { ok: false; kind: 'error'; message: string }
+            ): void => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeout);
+                autoUpdater.removeListener('update-available', onAvailable);
+                autoUpdater.removeListener('update-not-available', onNotAvailable);
+                autoUpdater.removeListener('error', onError);
+                resolve(result);
+            };
+
+            const timeout = setTimeout(() => {
+                finish({
+                    ok: false,
+                    kind: 'error',
+                    message:
+                        'Update check timed out. Check your connection and try again.',
+                });
+            }, timeoutMs);
+
+            const onAvailable = (): void => {
+                finish({ ok: true, kind: 'update_available' });
+            };
+
+            const onNotAvailable = (): void => {
+                finish({ ok: true, kind: 'no_update' });
+            };
+
+            const onError = (err: Error): void => {
+                finish({
+                    ok: false,
+                    kind: 'error',
+                    message: err.message || 'Update check failed.',
+                });
+            };
+
+            autoUpdater.once('update-available', onAvailable);
+            autoUpdater.once('update-not-available', onNotAvailable);
+            autoUpdater.once('error', onError);
+
+            try {
+                autoUpdater.checkForUpdates();
+            } catch (err) {
+                finish({
+                    ok: false,
+                    kind: 'error',
+                    message:
+                        err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+    });
+
     createWindow();
 });
 

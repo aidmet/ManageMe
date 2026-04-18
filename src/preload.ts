@@ -19,4 +19,10 @@ contextBridge.exposeInMainWorld('manageMeDesktop', {
     installUpdate: () => {
         ipcRenderer.send('app-install-update');
     },
+    checkForUpdates: (): Promise<
+        | { ok: true; kind: 'no_update' }
+        | { ok: true; kind: 'update_available' }
+        | { ok: false; kind: 'not_packaged' }
+        | { ok: false; kind: 'error'; message: string }
+    > => ipcRenderer.invoke('app-check-for-updates'),
 });

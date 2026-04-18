@@ -45,6 +45,12 @@ type AppUpdatePayload = {
     releaseNotes: string;
 };
 
+type CheckForUpdatesResult =
+    | { ok: true; kind: 'no_update' }
+    | { ok: true; kind: 'update_available' }
+    | { ok: false; kind: 'not_packaged' }
+    | { ok: false; kind: 'error'; message: string };
+
 declare global {
     interface Window {
         manageMeDesktop?: {
@@ -52,6 +58,7 @@ declare global {
                 callback: (payload: AppUpdatePayload) => void
             ) => () => void;
             installUpdate: () => void;
+            checkForUpdates: () => Promise<CheckForUpdatesResult>;
         };
     }
 }
@@ -821,6 +828,11 @@ const renderAuth = (): void => {
             </form>
 
             <p id="auth-message" class="auth-message" aria-live="polite"></p>
+            <div class="auth-update-row">
+                <button type="button" id="auth-check-updates-btn" class="auth-text-link">
+                    Check for updates
+                </button>
+            </div>
             <button type="button" id="back-from-reset-btn" class="auth-text-link auth-back-from-reset" hidden>
                 Back to sign in
             </button>
@@ -868,6 +880,9 @@ const renderAuth = (): void => {
     const authMessage = document.getElementById(
         'auth-message'
     ) as HTMLParagraphElement;
+    const checkUpdatesBtn = document.getElementById(
+        'auth-check-updates-btn'
+    ) as HTMLButtonElement;
 
     let currentMode: AuthMode = 'signin';
     let showPasswordReset = false;
@@ -944,6 +959,7 @@ const renderAuth = (): void => {
         submitButton.disabled = isLoading;
         forgotPasswordBtn.disabled = isLoading;
         backFromResetBtn.disabled = isLoading;
+        checkUpdatesBtn.disabled = isLoading;
         if (isLoading) {
             submitButton.textContent = showPasswordReset
                 ? 'Sending...'
@@ -959,6 +975,53 @@ const renderAuth = (): void => {
     signUpToggle.addEventListener('click', () => setMode('signup'));
     forgotPasswordBtn.addEventListener('click', () => enterPasswordReset());
     backFromResetBtn.addEventListener('click', () => leavePasswordReset());
+
+    checkUpdatesBtn.addEventListener('click', async () => {
+        const desktop = window.manageMeDesktop;
+        if (!desktop?.checkForUpdates) {
+            setStatus(
+                'Update checks are only available in the desktop app.',
+                'error'
+            );
+            return;
+        }
+        const prevLabel = checkUpdatesBtn.textContent;
+        checkUpdatesBtn.disabled = true;
+        checkUpdatesBtn.textContent = 'Checking...';
+        authMessage.textContent = '';
+        authMessage.classList.remove('success', 'error');
+        try {
+            const res = await desktop.checkForUpdates();
+            if (!res.ok && res.kind === 'not_packaged') {
+                setStatus(
+                    'Updates are available only in the installed desktop app.',
+                    'error'
+                );
+                return;
+            }
+            if (!res.ok && res.kind === 'error') {
+                setStatus(
+                    res.message.trim() ||
+                        'Could not check for updates. Try again later.',
+                    'error'
+                );
+                return;
+            }
+            if (res.ok && res.kind === 'no_update') {
+                setStatus("You're on the latest version.", 'success');
+                return;
+            }
+            if (res.ok && res.kind === 'update_available') {
+                setStatus(
+                    "A new version is available. It's downloading in the background—we'll let you know when it's ready to install.",
+                    'success'
+                );
+            }
+        } finally {
+            checkUpdatesBtn.disabled = false;
+            checkUpdatesBtn.textContent = prevLabel ?? 'Check for updates';
+        }
+    });
 
     authForm.addEventListener('submit', async (event) => {
         event.preventDefault();

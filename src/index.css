@@ -68,6 +68,12 @@ body {
     display: none !important;
 }
 
+.auth-update-row {
+    display: flex;
+    justify-content: center;
+    margin: 6px 0 0;
+}
+
 .auth-text-link {
     padding: 0;
     border: none;
