@@ -92,7 +92,10 @@ app.on('ready', () => {
                 settled = true;
                 clearTimeout(timeout);
                 autoUpdater.removeListener('update-available', onAvailable);
-                autoUpdater.removeListener('update-not-available', onNotAvailable);
+                autoUpdater.removeListener(
+                    'update-not-available',
+                    onNotAvailable
+                );
                 autoUpdater.removeListener('error', onError);
                 resolve(result);
             };
@@ -132,8 +135,7 @@ app.on('ready', () => {
                 finish({
                     ok: false,
                     kind: 'error',
-                    message:
-                        err instanceof Error ? err.message : String(err),
+                    message: err instanceof Error ? err.message : String(err),
                 });
             }
         });

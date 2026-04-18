@@ -1017,6 +1017,113 @@ body {
     word-break: break-word;
 }
 
+.meeting-create-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.meeting-create-form .submit-btn--compact {
+    align-self: flex-start;
+    margin-top: 4px;
+}
+
+.meeting-datetime-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+@media (max-width: 560px) {
+    .meeting-datetime-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+.meetings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.meetings-list-empty {
+    margin: 0;
+    padding: 16px;
+    background: #f8fafc;
+    border-radius: 12px;
+    color: #64748b;
+    font-size: 14px;
+}
+
+.meeting-item {
+    padding: 16px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fafafa;
+}
+
+.meeting-item-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px 12px;
+    margin-bottom: 8px;
+}
+
+.meeting-item-title {
+    margin: 0;
+    flex: 1 1 auto;
+    font-size: 16px;
+    font-weight: 700;
+    color: #0f172a;
+    line-height: 1.3;
+}
+
+.meeting-item-actions {
+    margin-left: auto;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.meeting-item-range {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #1d4ed8;
+    font-variant-numeric: tabular-nums;
+}
+
+.meeting-item-organizer {
+    margin: 0 0 6px;
+    font-size: 13px;
+    color: #64748b;
+}
+
+.meeting-item-meta {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: #334155;
+    word-break: break-word;
+}
+
+.meeting-item-meta a {
+    color: #1d4ed8;
+    font-weight: 600;
+}
+
+.meeting-item-notes {
+    margin: 8px 0 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #334155;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .dash-section--notebook .notebook-textarea {
     min-height: 200px;
     resize: vertical;

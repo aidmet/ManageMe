@@ -71,6 +71,50 @@ const USER_NOTEBOOKS_COLLECTION = 'userNotebooks';
 const NEWS_BODY_MAX_LENGTH = 6000;
 const NOTEBOOK_MAX_LENGTH = 50000;
 const NOTEBOOK_AUTOSAVE_MS = 900;
+const MEETINGS_SUBCOLLECTION = 'meetings';
+const MEETING_TITLE_MAX_LENGTH = 200;
+const MEETING_LOCATION_MAX_LENGTH = 200;
+const MEETING_URL_MAX_LENGTH = 500;
+const MEETING_NOTES_MAX_LENGTH = 2000;
+const MEETINGS_QUERY_LIMIT = 100;
+
+function toDatetimeLocalValue(d: Date): string {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function parseDatetimeLocalToDate(value: string): Date | null {
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+    const d = new Date(trimmed);
+    if (Number.isNaN(d.getTime())) {
+        return null;
+    }
+    return d;
+}
+
+function meetingRangeLabel(startAt: unknown, endAt: unknown): string {
+    const s = startAt instanceof Timestamp ? startAt.toDate() : null;
+    const e = endAt instanceof Timestamp ? endAt.toDate() : null;
+    if (!s || !e) {
+        return '—';
+    }
+    const opts: Intl.DateTimeFormatOptions = {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+    };
+    return `${s.toLocaleString(undefined, opts)} – ${e.toLocaleString(undefined, opts)}`;
+}
+
+function safeHttpUrlForHref(url: string): string | null {
+    const t = url.trim();
+    if (/^https:\/\//i.test(t) || /^http:\/\//i.test(t)) {
+        return t;
+    }
+    return null;
+}
 
 type InviteRoleEntry = {
     name: string;
@@ -1437,6 +1481,38 @@ const renderDashboard = async (user: User): Promise<void> => {
             `
         : '';
 
+    const meetingsSectionHtml = companyContext
+        ? `
+                <section class="dash-section">
+                    <h3 class="dash-section-heading">Meetings</h3>
+                    <p class="dash-section-hint">Schedule meetings everyone in the company can see. Times use your device timezone.</p>
+                    <form id="meeting-create-form" class="meeting-create-form">
+                        <label class="form-label" for="meeting-title-input">Title</label>
+                        <input id="meeting-title-input" class="form-input" type="text" maxlength="${MEETING_TITLE_MAX_LENGTH}" placeholder="e.g. Weekly sync" required autocomplete="off" />
+                        <div class="meeting-datetime-row">
+                            <div>
+                                <label class="form-label" for="meeting-start-input">Starts</label>
+                                <input id="meeting-start-input" class="form-input" type="datetime-local" required />
+                            </div>
+                            <div>
+                                <label class="form-label" for="meeting-end-input">Ends</label>
+                                <input id="meeting-end-input" class="form-input" type="datetime-local" required />
+                            </div>
+                        </div>
+                        <label class="form-label" for="meeting-location-input">Location (optional)</label>
+                        <input id="meeting-location-input" class="form-input" type="text" maxlength="${MEETING_LOCATION_MAX_LENGTH}" placeholder="Room or address" autocomplete="off" />
+                        <label class="form-label" for="meeting-url-input">Video link (optional)</label>
+                        <input id="meeting-url-input" class="form-input" type="url" maxlength="${MEETING_URL_MAX_LENGTH}" placeholder="https://…" autocomplete="off" />
+                        <label class="form-label" for="meeting-notes-input">Notes (optional)</label>
+                        <textarea id="meeting-notes-input" class="form-input form-textarea" rows="2" maxlength="${MEETING_NOTES_MAX_LENGTH}" placeholder="Agenda or details" autocomplete="off"></textarea>
+                        <button type="submit" id="meeting-create-btn" class="submit-btn submit-btn--compact">Add meeting</button>
+                    </form>
+                    <p id="meeting-create-message" class="auth-message dash-role-message" aria-live="polite"></p>
+                    <div id="meetings-list" class="meetings-list" aria-live="polite"></div>
+                </section>
+            `
+        : '';
+
     const notebookSectionHtml = `
                 <section class="dash-section dash-section--notebook">
                     <h3 class="dash-section-heading">My notebook</h3>
@@ -1600,6 +1676,7 @@ const renderDashboard = async (user: User): Promise<void> => {
                     ${membershipHtml}
                 </section>
                 ${companyNewsSectionHtml}
+                ${meetingsSectionHtml}
                 ${notebookSectionHtml}
                 ${holidayRequestSectionHtml}
                 ${directoryAndOpsHtml}
@@ -1695,6 +1772,36 @@ const renderDashboard = async (user: User): Promise<void> => {
                 </form>
                 <p id="transfer-ownership-message" class="auth-message" aria-live="polite"></p>
                 <button type="button" id="transfer-ownership-close" class="modal-close-btn">Cancel</button>
+            </div>
+        </div>
+
+        <div id="meeting-edit-modal" class="modal-backdrop" hidden>
+            <div class="modal-card modal-card--wide" role="dialog" aria-modal="true" aria-labelledby="meeting-edit-title">
+                <h2 id="meeting-edit-title" class="modal-title">Edit meeting</h2>
+                <p class="modal-subtitle">Update the time, place, or notes. Only the organizer can change this meeting.</p>
+                <form id="meeting-edit-form" class="auth-form modal-form">
+                    <label class="form-label" for="meeting-edit-title-input">Title</label>
+                    <input id="meeting-edit-title-input" class="form-input" type="text" maxlength="${MEETING_TITLE_MAX_LENGTH}" required autocomplete="off" />
+                    <div class="meeting-datetime-row">
+                        <div>
+                            <label class="form-label" for="meeting-edit-start-input">Starts</label>
+                            <input id="meeting-edit-start-input" class="form-input" type="datetime-local" required />
+                        </div>
+                        <div>
+                            <label class="form-label" for="meeting-edit-end-input">Ends</label>
+                            <input id="meeting-edit-end-input" class="form-input" type="datetime-local" required />
+                        </div>
+                    </div>
+                    <label class="form-label" for="meeting-edit-location-input">Location (optional)</label>
+                    <input id="meeting-edit-location-input" class="form-input" type="text" maxlength="${MEETING_LOCATION_MAX_LENGTH}" autocomplete="off" />
+                    <label class="form-label" for="meeting-edit-url-input">Video link (optional)</label>
+                    <input id="meeting-edit-url-input" class="form-input" type="url" maxlength="${MEETING_URL_MAX_LENGTH}" autocomplete="off" />
+                    <label class="form-label" for="meeting-edit-notes-input">Notes (optional)</label>
+                    <textarea id="meeting-edit-notes-input" class="form-input form-textarea" rows="2" maxlength="${MEETING_NOTES_MAX_LENGTH}" autocomplete="off"></textarea>
+                    <button type="submit" id="meeting-edit-save-btn" class="submit-btn">Save changes</button>
+                </form>
+                <p id="meeting-edit-message" class="auth-message" aria-live="polite"></p>
+                <button type="button" id="meeting-edit-cancel-btn" class="modal-close-btn">Cancel</button>
             </div>
         </div>
     </div>
@@ -1927,8 +2034,72 @@ const renderDashboard = async (user: User): Promise<void> => {
     const transferOwnershipClose = document.getElementById(
         'transfer-ownership-close'
     ) as HTMLButtonElement | null;
+    const meetingCreateForm = document.getElementById(
+        'meeting-create-form'
+    ) as HTMLFormElement | null;
+    const meetingTitleInput = document.getElementById(
+        'meeting-title-input'
+    ) as HTMLInputElement | null;
+    const meetingStartInput = document.getElementById(
+        'meeting-start-input'
+    ) as HTMLInputElement | null;
+    const meetingEndInput = document.getElementById(
+        'meeting-end-input'
+    ) as HTMLInputElement | null;
+    const meetingLocationInput = document.getElementById(
+        'meeting-location-input'
+    ) as HTMLInputElement | null;
+    const meetingUrlInput = document.getElementById(
+        'meeting-url-input'
+    ) as HTMLInputElement | null;
+    const meetingNotesInput = document.getElementById(
+        'meeting-notes-input'
+    ) as HTMLTextAreaElement | null;
+    const meetingCreateBtn = document.getElementById(
+        'meeting-create-btn'
+    ) as HTMLButtonElement | null;
+    const meetingCreateMessage = document.getElementById(
+        'meeting-create-message'
+    ) as HTMLParagraphElement | null;
+    const meetingsListEl = document.getElementById(
+        'meetings-list'
+    ) as HTMLDivElement | null;
+    const meetingEditModalEl = document.getElementById(
+        'meeting-edit-modal'
+    ) as HTMLDivElement | null;
+    const meetingEditFormEl = document.getElementById(
+        'meeting-edit-form'
+    ) as HTMLFormElement | null;
+    const meetingEditTitleInput = document.getElementById(
+        'meeting-edit-title-input'
+    ) as HTMLInputElement | null;
+    const meetingEditStartInput = document.getElementById(
+        'meeting-edit-start-input'
+    ) as HTMLInputElement | null;
+    const meetingEditEndInput = document.getElementById(
+        'meeting-edit-end-input'
+    ) as HTMLInputElement | null;
+    const meetingEditLocationInput = document.getElementById(
+        'meeting-edit-location-input'
+    ) as HTMLInputElement | null;
+    const meetingEditUrlInput = document.getElementById(
+        'meeting-edit-url-input'
+    ) as HTMLInputElement | null;
+    const meetingEditNotesInput = document.getElementById(
+        'meeting-edit-notes-input'
+    ) as HTMLTextAreaElement | null;
+    const meetingEditSaveBtn = document.getElementById(
+        'meeting-edit-save-btn'
+    ) as HTMLButtonElement | null;
+    const meetingEditCancelBtn = document.getElementById(
+        'meeting-edit-cancel-btn'
+    ) as HTMLButtonElement | null;
+    const meetingEditMessageEl = document.getElementById(
+        'meeting-edit-message'
+    ) as HTMLParagraphElement | null;
 
     let editingMemberUid: string | null = null;
+    let editingMeetingId: string | null = null;
 
     const refreshAuditLogFromDocs = (docs: QueryDocumentSnapshot[]): void => {
         if (!auditLogListEl) {
@@ -1983,6 +2154,54 @@ const renderDashboard = async (user: User): Promise<void> => {
                         ? `<button type="button" class="btn-text btn-text--danger news-delete-btn" data-news-id="${d.id}">Delete</button>`
                         : '';
                 return `<article class="news-item"><header class="news-item-header"><span class="news-item-author">${escapeHtml(author)}</span><span class="news-item-time">${escapeHtml(when)}</span>${del ? `<span class="news-item-actions">${del}</span>` : ''}</header><div class="news-item-body">${escapeHtml(body)}</div></article>`;
+            })
+            .join('');
+    };
+
+    const refreshMeetingsFromDocs = (docs: QueryDocumentSnapshot[]): void => {
+        if (!meetingsListEl) {
+            return;
+        }
+        if (docs.length === 0) {
+            meetingsListEl.innerHTML =
+                '<p class="meetings-list-empty">No meetings yet. Add one above.</p>';
+            return;
+        }
+        meetingsListEl.innerHTML = docs
+            .map((d) => {
+                const x = d.data();
+                const title =
+                    typeof x.title === 'string' ? x.title.trim() : 'Meeting';
+                const range = meetingRangeLabel(x.startAt, x.endAt);
+                const organizer =
+                    typeof x.organizerLabel === 'string'
+                        ? x.organizerLabel
+                        : 'Someone';
+                const organizerUid =
+                    typeof x.organizerUid === 'string' ? x.organizerUid : '';
+                const locRaw =
+                    typeof x.location === 'string' ? x.location.trim() : '';
+                const urlRaw =
+                    typeof x.meetingUrl === 'string' ? x.meetingUrl.trim() : '';
+                const notesRaw =
+                    typeof x.notes === 'string' ? x.notes.trim() : '';
+                const locLine = locRaw
+                    ? `<p class="meeting-item-meta">${escapeHtml(locRaw)}</p>`
+                    : '';
+                const safeMeetUrl = urlRaw ? safeHttpUrlForHref(urlRaw) : null;
+                const urlLine = safeMeetUrl
+                    ? `<p class="meeting-item-meta"><a href="${escapeHtml(safeMeetUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlRaw)}</a></p>`
+                    : urlRaw
+                      ? `<p class="meeting-item-meta">${escapeHtml(urlRaw)}</p>`
+                      : '';
+                const notesLine = notesRaw
+                    ? `<div class="meeting-item-notes">${escapeHtml(notesRaw)}</div>`
+                    : '';
+                const canOrganize = organizerUid === user.uid;
+                const actions = canOrganize
+                    ? `<span class="meeting-item-actions"><button type="button" class="btn-text" data-meeting-edit="${escapeHtml(d.id)}">Edit</button><button type="button" class="btn-text btn-text--danger" data-meeting-delete="${escapeHtml(d.id)}">Delete</button></span>`
+                    : '';
+                return `<article class="meeting-item"><header class="meeting-item-header"><h4 class="meeting-item-title">${escapeHtml(title)}</h4>${actions}</header><p class="meeting-item-range">${escapeHtml(range)}</p><p class="meeting-item-organizer">Organizer: ${escapeHtml(organizer)}</p>${locLine}${urlLine}${notesLine}</article>`;
             })
             .join('');
     };
@@ -2759,6 +2978,384 @@ const renderDashboard = async (user: User): Promise<void> => {
         });
     }
 
+    const closeMeetingEditModal = (): void => {
+        editingMeetingId = null;
+        if (meetingEditModalEl) {
+            meetingEditModalEl.hidden = true;
+        }
+        if (meetingEditFormEl) {
+            meetingEditFormEl.reset();
+        }
+        if (meetingEditMessageEl) {
+            meetingEditMessageEl.textContent = '';
+            meetingEditMessageEl.classList.remove('success', 'error');
+        }
+    };
+
+    if (
+        companyContext &&
+        meetingCreateForm &&
+        meetingTitleInput &&
+        meetingStartInput &&
+        meetingEndInput &&
+        meetingCreateBtn &&
+        meetingCreateMessage &&
+        meetingsListEl
+    ) {
+        meetingCreateForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            meetingCreateMessage.classList.remove('success', 'error');
+            meetingCreateMessage.textContent = '';
+            const title = meetingTitleInput.value.trim();
+            if (!title) {
+                meetingCreateMessage.textContent = 'Enter a meeting title.';
+                meetingCreateMessage.classList.add('error');
+                return;
+            }
+            const startD = parseDatetimeLocalToDate(meetingStartInput.value);
+            const endD = parseDatetimeLocalToDate(meetingEndInput.value);
+            if (!startD || !endD) {
+                meetingCreateMessage.textContent =
+                    'Choose valid start and end times.';
+                meetingCreateMessage.classList.add('error');
+                return;
+            }
+            if (endD.getTime() <= startD.getTime()) {
+                meetingCreateMessage.textContent =
+                    'End time must be after start time.';
+                meetingCreateMessage.classList.add('error');
+                return;
+            }
+            const loc = meetingLocationInput?.value.trim() ?? '';
+            const urlRaw = meetingUrlInput?.value.trim() ?? '';
+            const notes = meetingNotesInput?.value.trim() ?? '';
+            if (loc.length > MEETING_LOCATION_MAX_LENGTH) {
+                meetingCreateMessage.textContent = 'Location is too long.';
+                meetingCreateMessage.classList.add('error');
+                return;
+            }
+            if (urlRaw.length > MEETING_URL_MAX_LENGTH) {
+                meetingCreateMessage.textContent = 'Video link is too long.';
+                meetingCreateMessage.classList.add('error');
+                return;
+            }
+            if (notes.length > MEETING_NOTES_MAX_LENGTH) {
+                meetingCreateMessage.textContent = 'Notes are too long.';
+                meetingCreateMessage.classList.add('error');
+                return;
+            }
+            const actorLabel =
+                user.displayName?.trim() ||
+                user.email?.split('@')[0] ||
+                'Member';
+            meetingCreateBtn.disabled = true;
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        MEETINGS_SUBCOLLECTION
+                    ),
+                    {
+                        organizerUid: user.uid,
+                        organizerLabel: actorLabel,
+                        title,
+                        startAt: Timestamp.fromDate(startD),
+                        endAt: Timestamp.fromDate(endD),
+                        location: loc || null,
+                        meetingUrl: urlRaw || null,
+                        notes: notes || null,
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'meeting_created',
+                        summary: `${actorLabel} scheduled a meeting`,
+                        detail: title,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                meetingCreateForm.reset();
+                meetingCreateMessage.textContent = 'Meeting added.';
+                meetingCreateMessage.classList.add('success');
+            } catch (err) {
+                meetingCreateMessage.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not save the meeting. Try again.'
+                );
+                meetingCreateMessage.classList.add('error');
+            } finally {
+                meetingCreateBtn.disabled = false;
+            }
+        });
+
+        meetingsListEl.addEventListener('click', async (ev) => {
+            const delBtn = (ev.target as HTMLElement).closest(
+                'button[data-meeting-delete]'
+            ) as HTMLButtonElement | null;
+            const editBtn = (ev.target as HTMLElement).closest(
+                'button[data-meeting-edit]'
+            ) as HTMLButtonElement | null;
+            if (delBtn) {
+                const id = delBtn.getAttribute('data-meeting-delete');
+                if (!id || !window.confirm('Delete this meeting?')) {
+                    return;
+                }
+                const meetingRef = doc(
+                    db,
+                    'companies',
+                    companyContext.companyId,
+                    MEETINGS_SUBCOLLECTION,
+                    id
+                );
+                try {
+                    const snap = await getDoc(meetingRef);
+                    if (!snap.exists()) {
+                        window.alert('That meeting is already gone.');
+                        return;
+                    }
+                    const md = snap.data();
+                    const prevTitle =
+                        typeof md.title === 'string' ? md.title : '';
+                    await deleteDoc(meetingRef);
+                    const actorLabel =
+                        user.displayName?.trim() ||
+                        user.email?.split('@')[0] ||
+                        'Member';
+                    try {
+                        await appendAuditEvent(companyContext.companyId, {
+                            actorUid: user.uid,
+                            actorLabel,
+                            action: 'meeting_deleted',
+                            summary: `${actorLabel} deleted a meeting`,
+                            detail: prevTitle || undefined,
+                        });
+                    } catch {
+                        /* best-effort */
+                    }
+                } catch (err) {
+                    window.alert(
+                        friendlyFirestoreError(
+                            err,
+                            'Could not delete that meeting.'
+                        )
+                    );
+                }
+                return;
+            }
+            if (
+                editBtn &&
+                meetingEditModalEl &&
+                meetingEditFormEl &&
+                meetingEditTitleInput &&
+                meetingEditStartInput &&
+                meetingEditEndInput &&
+                meetingEditLocationInput &&
+                meetingEditUrlInput &&
+                meetingEditNotesInput &&
+                meetingEditMessageEl
+            ) {
+                const id = editBtn.getAttribute('data-meeting-edit');
+                if (!id) {
+                    return;
+                }
+                const meetingRef = doc(
+                    db,
+                    'companies',
+                    companyContext.companyId,
+                    MEETINGS_SUBCOLLECTION,
+                    id
+                );
+                try {
+                    const snap = await getDoc(meetingRef);
+                    if (!snap.exists()) {
+                        window.alert('That meeting no longer exists.');
+                        return;
+                    }
+                    const data = snap.data();
+                    const orgUid =
+                        typeof data.organizerUid === 'string'
+                            ? data.organizerUid
+                            : '';
+                    if (orgUid !== user.uid) {
+                        window.alert(
+                            'Only the organizer can edit this meeting.'
+                        );
+                        return;
+                    }
+                    editingMeetingId = id;
+                    meetingEditTitleInput.value =
+                        typeof data.title === 'string' ? data.title : '';
+                    const s =
+                        data.startAt instanceof Timestamp
+                            ? data.startAt.toDate()
+                            : null;
+                    const en =
+                        data.endAt instanceof Timestamp
+                            ? data.endAt.toDate()
+                            : null;
+                    meetingEditStartInput.value = s
+                        ? toDatetimeLocalValue(s)
+                        : '';
+                    meetingEditEndInput.value = en
+                        ? toDatetimeLocalValue(en)
+                        : '';
+                    meetingEditLocationInput.value =
+                        typeof data.location === 'string' ? data.location : '';
+                    meetingEditUrlInput.value =
+                        typeof data.meetingUrl === 'string'
+                            ? data.meetingUrl
+                            : '';
+                    meetingEditNotesInput.value =
+                        typeof data.notes === 'string' ? data.notes : '';
+                    meetingEditMessageEl.textContent = '';
+                    meetingEditMessageEl.classList.remove('success', 'error');
+                    meetingEditModalEl.hidden = false;
+                } catch (err) {
+                    window.alert(
+                        friendlyFirestoreError(
+                            err,
+                            'Could not open that meeting.'
+                        )
+                    );
+                }
+            }
+        });
+    }
+
+    if (
+        companyContext &&
+        meetingEditFormEl &&
+        meetingEditTitleInput &&
+        meetingEditStartInput &&
+        meetingEditEndInput &&
+        meetingEditLocationInput &&
+        meetingEditUrlInput &&
+        meetingEditNotesInput &&
+        meetingEditSaveBtn &&
+        meetingEditMessageEl
+    ) {
+        meetingEditFormEl.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!editingMeetingId) {
+                return;
+            }
+            meetingEditMessageEl.classList.remove('success', 'error');
+            meetingEditMessageEl.textContent = '';
+            const title = meetingEditTitleInput.value.trim();
+            if (!title) {
+                meetingEditMessageEl.textContent = 'Enter a meeting title.';
+                meetingEditMessageEl.classList.add('error');
+                return;
+            }
+            const startD = parseDatetimeLocalToDate(
+                meetingEditStartInput.value
+            );
+            const endD = parseDatetimeLocalToDate(meetingEditEndInput.value);
+            if (!startD || !endD) {
+                meetingEditMessageEl.textContent =
+                    'Choose valid start and end times.';
+                meetingEditMessageEl.classList.add('error');
+                return;
+            }
+            if (endD.getTime() <= startD.getTime()) {
+                meetingEditMessageEl.textContent =
+                    'End time must be after start time.';
+                meetingEditMessageEl.classList.add('error');
+                return;
+            }
+            const loc = meetingEditLocationInput.value.trim();
+            const urlRaw = meetingEditUrlInput.value.trim();
+            const notes = meetingEditNotesInput.value.trim();
+            if (loc.length > MEETING_LOCATION_MAX_LENGTH) {
+                meetingEditMessageEl.textContent = 'Location is too long.';
+                meetingEditMessageEl.classList.add('error');
+                return;
+            }
+            if (urlRaw.length > MEETING_URL_MAX_LENGTH) {
+                meetingEditMessageEl.textContent = 'Video link is too long.';
+                meetingEditMessageEl.classList.add('error');
+                return;
+            }
+            if (notes.length > MEETING_NOTES_MAX_LENGTH) {
+                meetingEditMessageEl.textContent = 'Notes are too long.';
+                meetingEditMessageEl.classList.add('error');
+                return;
+            }
+            const meetingRef = doc(
+                db,
+                'companies',
+                companyContext.companyId,
+                MEETINGS_SUBCOLLECTION,
+                editingMeetingId
+            );
+            meetingEditSaveBtn.disabled = true;
+            try {
+                const snap = await getDoc(meetingRef);
+                if (!snap.exists()) {
+                    meetingEditMessageEl.textContent =
+                        'This meeting was removed. Close and refresh.';
+                    meetingEditMessageEl.classList.add('error');
+                    return;
+                }
+                const prev = snap.data();
+                if (
+                    typeof prev.organizerUid !== 'string' ||
+                    prev.organizerUid !== user.uid
+                ) {
+                    meetingEditMessageEl.textContent =
+                        'You can no longer edit this meeting.';
+                    meetingEditMessageEl.classList.add('error');
+                    return;
+                }
+                await updateDoc(meetingRef, {
+                    title,
+                    startAt: Timestamp.fromDate(startD),
+                    endAt: Timestamp.fromDate(endD),
+                    location: loc || null,
+                    meetingUrl: urlRaw || null,
+                    notes: notes || null,
+                    updatedAt: serverTimestamp(),
+                });
+                const actorLabel =
+                    user.displayName?.trim() ||
+                    user.email?.split('@')[0] ||
+                    'Member';
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'meeting_updated',
+                        summary: `${actorLabel} updated a meeting`,
+                        detail: title,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                closeMeetingEditModal();
+            } catch (err) {
+                meetingEditMessageEl.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not save changes.'
+                );
+                meetingEditMessageEl.classList.add('error');
+            } finally {
+                meetingEditSaveBtn.disabled = false;
+            }
+        });
+    }
+
+    if (meetingEditCancelBtn) {
+        meetingEditCancelBtn.addEventListener('click', () => {
+            closeMeetingEditModal();
+        });
+    }
+
     if (
         companyContext &&
         holidayRequestForm &&
@@ -3049,6 +3646,22 @@ const renderDashboard = async (user: User): Promise<void> => {
         dashboardUnsubs.push(
             onSnapshot(newsQ, (snap) => {
                 refreshCompanyNewsFromDocs(snap.docs);
+            })
+        );
+
+        const meetingsQ = query(
+            collection(
+                db,
+                'companies',
+                companyContext.companyId,
+                MEETINGS_SUBCOLLECTION
+            ),
+            orderBy('startAt', 'asc'),
+            limit(MEETINGS_QUERY_LIMIT)
+        );
+        dashboardUnsubs.push(
+            onSnapshot(meetingsQ, (snap) => {
+                refreshMeetingsFromDocs(snap.docs);
             })
         );
 
