@@ -17,6 +17,9 @@ if (require('electron-squirrel-startup')) {
 
 let mainWindow: BrowserWindow | null = null;
 
+/** Avoid overlapping manual IPC checks (double-clicks). */
+let manualUpdateCheckInFlight = false;
+
 const createWindow = (): void => {
     // Create the browser window.
     mainWindow = new BrowserWindow({
@@ -54,6 +57,9 @@ app.on('ready', () => {
                 type: UpdateSourceType.ElectronPublicUpdateService,
                 repo: 'aidmet/ManageMe',
             },
+            // Longer interval reduces clashes with manual "Check for updates" on Windows
+            // (Squirrel: "AutoUpdater process ... is already running").
+            updateInterval: '1 hour',
             notifyUser: true,
             onNotifyUser: (info: IUpdateInfo) => {
                 const payload = {
@@ -72,6 +78,15 @@ app.on('ready', () => {
         if (!app.isPackaged) {
             return { ok: false, kind: 'not_packaged' as const };
         }
+        if (manualUpdateCheckInFlight) {
+            return {
+                ok: false,
+                kind: 'error' as const,
+                message:
+                    'A check is already in progress. Wait a few seconds and try again.',
+            };
+        }
+        manualUpdateCheckInFlight = true;
         return await new Promise<
             | { ok: true; kind: 'no_update' }
             | { ok: true; kind: 'update_available' }
@@ -90,6 +105,7 @@ app.on('ready', () => {
                     return;
                 }
                 settled = true;
+                manualUpdateCheckInFlight = false;
                 clearTimeout(timeout);
                 autoUpdater.removeListener('update-available', onAvailable);
                 autoUpdater.removeListener(
@@ -118,10 +134,14 @@ app.on('ready', () => {
             };
 
             const onError = (err: Error): void => {
+                const raw = err.message || 'Update check failed.';
+                const message = /already running/i.test(raw)
+                    ? 'Another update check is still running (often right after startup). Try again in a few seconds.'
+                    : raw;
                 finish({
                     ok: false,
                     kind: 'error',
-                    message: err.message || 'Update check failed.',
+                    message,
                 });
             };
 
