@@ -1756,6 +1756,15 @@ const renderDashboard = async (user: User): Promise<void> => {
                             ? ' disabled aria-disabled="true" title="Only Managers, Admins, and High up roles can send invitations."'
                             : ''
                     }>Make an invitation</button>
+                    <button type="button" id="manage-invites-btn" class="settings-menu-item settings-menu-item--neutral${
+                        companyContext && !companyContext.canSendInvites
+                            ? ' settings-menu-item--disabled'
+                            : ''
+                    }" role="menuitem"${
+                        companyContext && !companyContext.canSendInvites
+                            ? ' disabled aria-disabled="true" title="Only Managers, Admins, and High up roles can manage invitations."'
+                            : ''
+                    }>Manage invitations</button>
                     ${
                         companyContext?.isOwner
                             ? '<button type="button" id="manage-holidays-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">Manage holidays</button>'
@@ -1819,6 +1828,16 @@ const renderDashboard = async (user: User): Promise<void> => {
                 <p id="invite-modal-message" class="auth-message" aria-live="polite"></p>
 
                 <button type="button" id="invite-modal-close" class="modal-close-btn">Close</button>
+            </div>
+        </div>
+
+        <div id="invite-manage-modal" class="modal-backdrop" hidden>
+            <div class="modal-card modal-card--wide" role="dialog" aria-modal="true" aria-labelledby="invite-manage-title">
+                <h2 id="invite-manage-title" class="modal-title">Manage invitations</h2>
+                <p class="modal-subtitle">Review current invites, copy IDs, revoke pending invites, or extend expiry by ${INVITE_EXPIRY_DAYS} days.</p>
+                <div id="invite-manage-list" class="meeting-list" aria-live="polite"></div>
+                <p id="invite-manage-message" class="auth-message" aria-live="polite"></p>
+                <button type="button" id="invite-manage-close" class="modal-close-btn">Close</button>
             </div>
         </div>
 
@@ -1922,6 +1941,9 @@ const renderDashboard = async (user: User): Promise<void> => {
     const makeInviteBtn = document.getElementById(
         'make-invite-btn'
     ) as HTMLButtonElement;
+    const manageInvitesBtn = document.getElementById(
+        'manage-invites-btn'
+    ) as HTMLButtonElement;
     const manageHolidaysBtn = document.getElementById(
         'manage-holidays-btn'
     ) as HTMLButtonElement | null;
@@ -1961,6 +1983,18 @@ const renderDashboard = async (user: User): Promise<void> => {
     const inviteModalMessage = document.getElementById(
         'invite-modal-message'
     ) as HTMLParagraphElement;
+    const inviteManageModal = document.getElementById(
+        'invite-manage-modal'
+    ) as HTMLDivElement | null;
+    const inviteManageList = document.getElementById(
+        'invite-manage-list'
+    ) as HTMLDivElement | null;
+    const inviteManageMessage = document.getElementById(
+        'invite-manage-message'
+    ) as HTMLParagraphElement | null;
+    const inviteManageClose = document.getElementById(
+        'invite-manage-close'
+    ) as HTMLButtonElement | null;
     const newRoleInput = document.getElementById(
         'new-role-input'
     ) as HTMLInputElement | null;
@@ -2010,6 +2044,8 @@ const renderDashboard = async (user: User): Promise<void> => {
     let latestTeams: CompanyTeam[] = companyContext
         ? companyContext.teams.slice()
         : [];
+    let latestInviteDocs: QueryDocumentSnapshot[] = [];
+    let inviteManageActionBusy = false;
 
     const directorySearch = document.getElementById(
         'directory-search'
@@ -2634,6 +2670,91 @@ const renderDashboard = async (user: User): Promise<void> => {
                     ? `<span class="team-row-actions"><button type="button" class="btn-text" data-team-rename="${escapeHtml(t.id)}">Rename</button><button type="button" class="btn-text btn-text--danger" data-team-delete="${escapeHtml(t.id)}">Delete</button></span>`
                     : '';
                 return `<li class="team-row"><span class="team-row-name">${escapeHtml(t.name)}</span>${actions}</li>`;
+            })
+            .join('');
+    };
+
+    const inviteStatusMeta = (
+        docSnap: QueryDocumentSnapshot
+    ): {
+        statusLabel: string;
+        statusClass: string;
+        canRevoke: boolean;
+        canExtend: boolean;
+    } => {
+        const invite = docSnap.data();
+        const used = invite.used === true;
+        const expiresAt =
+            invite.expiresAt instanceof Timestamp ? invite.expiresAt : null;
+        const expired = Boolean(expiresAt && expiresAt.toMillis() <= Date.now());
+        if (used) {
+            return {
+                statusLabel: 'Used',
+                statusClass: 'status-pill status-pill--offboarded',
+                canRevoke: false,
+                canExtend: false,
+            };
+        }
+        if (expired) {
+            return {
+                statusLabel: 'Expired',
+                statusClass: 'status-pill status-pill--suspended',
+                canRevoke: false,
+                canExtend: true,
+            };
+        }
+        return {
+            statusLabel: 'Pending',
+            statusClass: 'status-pill status-pill--active',
+            canRevoke: true,
+            canExtend: true,
+        };
+    };
+
+    const refreshInviteManageList = (): void => {
+        if (!inviteManageList) {
+            return;
+        }
+        if (!companyContext) {
+            inviteManageList.innerHTML =
+                '<p class="meeting-empty">No company workspace found.</p>';
+            return;
+        }
+        if (latestInviteDocs.length === 0) {
+            inviteManageList.innerHTML =
+                '<p class="meeting-empty">No invitations yet.</p>';
+            return;
+        }
+        inviteManageList.innerHTML = latestInviteDocs
+            .map((docSnap) => {
+                const invite = docSnap.data();
+                const inviteeName =
+                    typeof invite.inviteeName === 'string' &&
+                    invite.inviteeName.trim()
+                        ? invite.inviteeName.trim()
+                        : 'Unnamed person';
+                const roleRaw =
+                    typeof invite.role === 'string' ? invite.role.trim() : '';
+                const role = roleRaw
+                    ? formatRoleForDisplay(roleRaw)
+                    : 'Unspecified role';
+                const createdAtLabel = auditTimestampLabel(invite.createdAt);
+                const expiresAtLabel = auditTimestampLabel(invite.expiresAt);
+                const statusMeta = inviteStatusMeta(docSnap);
+                const disableActions = inviteManageActionBusy
+                    ? ' disabled aria-disabled="true"'
+                    : '';
+                const revokeBtn = statusMeta.canRevoke
+                    ? `<button type="button" class="btn-text btn-text--danger" data-invite-revoke="${escapeHtml(docSnap.id)}"${disableActions}>Revoke</button>`
+                    : '';
+                const extendBtn = statusMeta.canExtend
+                    ? `<button type="button" class="btn-text" data-invite-extend="${escapeHtml(docSnap.id)}"${disableActions}>Resend / extend</button>`
+                    : '';
+                const copyBtn = `<button type="button" class="btn-text" data-invite-copy="${escapeHtml(docSnap.id)}"${disableActions}>Copy ID</button>`;
+                const actions = [copyBtn, extendBtn, revokeBtn]
+                    .filter(Boolean)
+                    .join('');
+                return `<article class="meeting-item"><header class="meeting-item-header"><h4 class="meeting-item-title">${escapeHtml(inviteeName)}</h4><span class="${statusMeta.statusClass}">${escapeHtml(statusMeta.statusLabel)}</span></header><p class="meeting-item-meta">Role: ${escapeHtml(role)}</p><p class="meeting-item-meta">Created: ${escapeHtml(createdAtLabel)} | Expires: ${escapeHtml(expiresAtLabel)}</p><p class="meeting-item-meta">Invite ID: <code>${escapeHtml(docSnap.id)}</code></p><p class="team-row-actions">${actions}</p></article>`;
             })
             .join('');
     };
@@ -4040,6 +4161,18 @@ const renderDashboard = async (user: User): Promise<void> => {
                 refreshMeetingsFromDocs(snap.docs);
             })
         );
+        const invitesQ = query(
+            collection(db, INVITES_COLLECTION),
+            where('companyId', '==', companyContext.companyId),
+            orderBy('createdAt', 'desc'),
+            limit(100)
+        );
+        dashboardUnsubs.push(
+            onSnapshot(invitesQ, (snap) => {
+                latestInviteDocs = snap.docs;
+                refreshInviteManageList();
+            })
+        );
 
         dashboardUnsubs.push(() => {
             dmThreadUnsubscribe?.();
@@ -4221,12 +4354,42 @@ const renderDashboard = async (user: User): Promise<void> => {
         invitePersonName.focus();
     };
 
+    const closeInviteManageModal = (): void => {
+        if (!inviteManageModal || !inviteManageMessage) {
+            return;
+        }
+        inviteManageModal.hidden = true;
+        inviteManageMessage.textContent = '';
+        inviteManageMessage.classList.remove('success', 'error');
+        inviteManageActionBusy = false;
+        refreshInviteManageList();
+    };
+
+    const openInviteManageModal = (): void => {
+        if (!inviteManageModal || !inviteManageMessage) {
+            return;
+        }
+        closeMenu();
+        inviteManageModal.hidden = false;
+        inviteManageMessage.textContent = '';
+        inviteManageMessage.classList.remove('success', 'error');
+        refreshInviteManageList();
+    };
+
     makeInviteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (makeInviteBtn.disabled) {
             return;
         }
         openInviteModal();
+    });
+
+    manageInvitesBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (manageInvitesBtn.disabled) {
+            return;
+        }
+        openInviteManageModal();
     });
 
     const closeHolidayManageModal = (): void => {
@@ -4558,6 +4721,141 @@ const renderDashboard = async (user: User): Promise<void> => {
     inviteModal.addEventListener('click', (e) => {
         if (e.target === inviteModal) {
             closeInviteModal();
+        }
+    });
+
+    inviteManageClose?.addEventListener('click', () => closeInviteManageModal());
+
+    inviteManageModal?.addEventListener('click', (e) => {
+        if (e.target === inviteManageModal) {
+            closeInviteManageModal();
+        }
+    });
+
+    inviteManageList?.addEventListener('click', async (e) => {
+        if (!companyContext || !inviteManageMessage) {
+            return;
+        }
+        const target = e.target as HTMLElement | null;
+        if (!target) {
+            return;
+        }
+        const copyId = target.getAttribute('data-invite-copy');
+        const revokeId = target.getAttribute('data-invite-revoke');
+        const extendId = target.getAttribute('data-invite-extend');
+        const inviteId = copyId || revokeId || extendId;
+        if (!inviteId) {
+            return;
+        }
+        inviteManageMessage.textContent = '';
+        inviteManageMessage.classList.remove('success', 'error');
+        if (copyId) {
+            try {
+                await navigator.clipboard.writeText(copyId);
+                inviteManageMessage.textContent = 'Invitation ID copied.';
+                inviteManageMessage.classList.add('success');
+            } catch {
+                inviteManageMessage.textContent =
+                    'Could not copy automatically. Copy the ID manually.';
+                inviteManageMessage.classList.add('error');
+            }
+            return;
+        }
+        if (inviteManageActionBusy) {
+            return;
+        }
+        const docSnap = latestInviteDocs.find((inviteDoc) => inviteDoc.id === inviteId);
+        if (!docSnap) {
+            inviteManageMessage.textContent =
+                'This invitation is no longer available. Refresh and try again.';
+            inviteManageMessage.classList.add('error');
+            return;
+        }
+        const statusMeta = inviteStatusMeta(docSnap);
+        if (revokeId && !statusMeta.canRevoke) {
+            inviteManageMessage.textContent = 'Only pending invites can be revoked.';
+            inviteManageMessage.classList.add('error');
+            return;
+        }
+        if (extendId && !statusMeta.canExtend) {
+            inviteManageMessage.textContent = 'Used invitations cannot be extended.';
+            inviteManageMessage.classList.add('error');
+            return;
+        }
+        if (
+            revokeId &&
+            !window.confirm(
+                'Revoke this invitation now? The ID will no longer be usable.'
+            )
+        ) {
+            return;
+        }
+        inviteManageActionBusy = true;
+        refreshInviteManageList();
+        const actorLabel =
+            user.displayName?.trim() || user.email?.split('@')[0] || 'User';
+        const invite = docSnap.data();
+        const inviteeName =
+            typeof invite.inviteeName === 'string' ? invite.inviteeName.trim() : '';
+        const role = typeof invite.role === 'string' ? invite.role.trim() : '';
+        try {
+            const inviteRef = doc(db, INVITES_COLLECTION, inviteId);
+            if (revokeId) {
+                await updateDoc(inviteRef, {
+                    expiresAt: Timestamp.fromMillis(Date.now()),
+                });
+                inviteManageMessage.textContent = 'Invitation revoked.';
+                inviteManageMessage.classList.add('success');
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'invite_revoked',
+                        summary: `Invitation revoked for ${inviteeName || 'a teammate'}`,
+                        detail: role
+                            ? `Role: ${formatRoleForDisplay(role)}`
+                            : undefined,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+            } else if (extendId) {
+                const nextExpiryMs =
+                    Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+                await updateDoc(inviteRef, {
+                    expiresAt: Timestamp.fromMillis(nextExpiryMs),
+                });
+                const nextExpiryLabel = new Date(nextExpiryMs).toLocaleDateString(
+                    undefined,
+                    {
+                        dateStyle: 'medium',
+                    }
+                );
+                inviteManageMessage.textContent = `Invitation extended to ${nextExpiryLabel}.`;
+                inviteManageMessage.classList.add('success');
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'invite_extended',
+                        summary: `Invitation expiry extended for ${inviteeName || 'a teammate'}`,
+                        detail: role
+                            ? `Role: ${formatRoleForDisplay(role)}`
+                            : undefined,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+            }
+        } catch (err) {
+            inviteManageMessage.textContent = friendlyFirestoreError(
+                err,
+                'Could not update the invitation.'
+            );
+            inviteManageMessage.classList.add('error');
+        } finally {
+            inviteManageActionBusy = false;
+            refreshInviteManageList();
         }
     });
 
