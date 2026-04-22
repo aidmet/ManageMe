@@ -74,6 +74,17 @@ app.on('ready', () => {
     if (process.platform === 'win32') {
         app.setAppUserModelId('com.aidmet.manageme');
     }
+    ipcMain.on('set-window-background', (_event, hex: unknown) => {
+        if (
+            typeof hex === 'string' &&
+            /^#[0-9a-fA-F]{6}$/.test(hex) &&
+            mainWindow &&
+            !mainWindow.isDestroyed()
+        ) {
+            mainWindow.setBackgroundColor(hex);
+        }
+    });
+
     ipcMain.handle('show-native-notification', (_event, payload: unknown) => {
         if (!payload || typeof payload !== 'object') {
             return;

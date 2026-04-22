@@ -7,6 +7,14 @@
  */
 
 import './index.css';
+import {
+    cycleTheme,
+    getTheme,
+    initThemeFromStorage,
+    setTheme,
+    themePreferenceLabel,
+    type ThemePreference,
+} from './theme';
 import { FirebaseError } from 'firebase/app';
 import type { User } from 'firebase/auth';
 import {
@@ -37,6 +45,8 @@ import {
     where,
 } from 'firebase/firestore';
 import type { QueryDocumentSnapshot, Unsubscribe } from 'firebase/firestore';
+import DOMPurify from 'dompurify';
+import { marked } from 'marked';
 
 // =========================
 // Core types and IPC bridge
@@ -58,6 +68,7 @@ type CheckForUpdatesResult =
 declare global {
     interface Window {
         manageMeDesktop?: {
+            setWindowBackgroundColor?: (hex: string) => void;
             onUpdateReady: (
                 callback: (payload: AppUpdatePayload) => void
             ) => () => void;
@@ -68,6 +79,83 @@ declare global {
                 body: string;
             }) => void;
         };
+    }
+}
+
+marked.setOptions({ gfm: true });
+
+let domPurifyLinkHookInstalled = false;
+function installDomPurifyLinkHook(): void {
+    if (domPurifyLinkHookInstalled) {
+        return;
+    }
+    domPurifyLinkHookInstalled = true;
+    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+        if (node.tagName !== 'A') {
+            return;
+        }
+        const el = node as HTMLAnchorElement;
+        const href = el.getAttribute('href');
+        if (!href || !/^https?:\/\//i.test(href)) {
+            return;
+        }
+        el.setAttribute('target', '_blank');
+        el.setAttribute('rel', 'noopener noreferrer');
+    });
+}
+
+/** Assistant replies are Markdown; sanitize before innerHTML. User bubbles stay plain text. */
+function assistantMarkdownToSafeHtml(source: string): string {
+    installDomPurifyLinkHook();
+    const html = marked.parse(source, { async: false }) as string;
+    return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+}
+
+initThemeFromStorage();
+
+document.addEventListener('click', (e) => {
+    const seg = (e.target as HTMLElement).closest(
+        '.theme-seg-btn[data-theme-pref]'
+    ) as HTMLButtonElement | null;
+    if (seg) {
+        const p = seg.dataset.themePref;
+        if (p === 'light' || p === 'dark' || p === 'system') {
+            setTheme(p);
+            syncThemePreferenceUi();
+        }
+        return;
+    }
+    if ((e.target as HTMLElement).closest('#theme-cycle-btn')) {
+        cycleTheme();
+        syncThemePreferenceUi();
+    }
+});
+
+function themeToggleStripHtml(): string {
+    return `
+    <div class="theme-toggle-strip" role="group" aria-label="Color theme">
+        <span class="theme-toggle-strip-label">Theme</span>
+        <div class="theme-toggle-segment">
+            <button type="button" class="theme-seg-btn" data-theme-pref="light" aria-pressed="false">Light</button>
+            <button type="button" class="theme-seg-btn" data-theme-pref="dark" aria-pressed="false">Dark</button>
+            <button type="button" class="theme-seg-btn" data-theme-pref="system" aria-pressed="false">System</button>
+        </div>
+    </div>`;
+}
+
+function syncThemePreferenceUi(): void {
+    const cur = getTheme();
+    document
+        .querySelectorAll<HTMLButtonElement>('.theme-seg-btn[data-theme-pref]')
+        .forEach((btn) => {
+            const p = btn.dataset.themePref as ThemePreference;
+            const active = p === cur;
+            btn.classList.toggle('theme-seg-btn--active', active);
+            btn.setAttribute('aria-pressed', String(active));
+        });
+    const cyc = document.getElementById('theme-cycle-btn');
+    if (cyc) {
+        cyc.textContent = `Theme: ${themePreferenceLabel(cur)}`;
     }
 }
 
@@ -90,6 +178,319 @@ const MEMBER_MESSAGE_BODY_MAX_LENGTH = 4000;
 const DM_THREAD_QUERY_LIMIT = 100;
 const DM_NOTIFICATION_BODY_MAX = 180;
 const WELCOME_COMPANY_NEWS_AUTHOR = 'The ManageMe Team';
+
+/** Chats keyed by Firebase uid. Rules: allow read/write only when request.auth.uid == uid. */
+const USER_AI_CHATS_COLLECTION = 'userAiChats';
+const MANAGE_ME_CHAT_API = 'https://manage-me-api.vercel.app/api/chat';
+const DEFAULT_AI_MODEL = 'gpt-4.1-mini';
+const AI_CHAT_MESSAGES_CAP = 100;
+const AI_TOOL_LOOP_MAX = 12;
+
+/** Sent on every chat request as Responses API `instructions` (system behavior). */
+const MANAGE_ME_AI_INSTRUCTIONS = `You help users inside ManageMe.
+
+About ManageMe:
+- ManageMe is a desktop company workspace (Electron) for running an organization in one place: people, roles, and structure.
+- Each user works inside a company they joined or created. The dashboard is the home surface: company news, meetings, direct messages, a personal notebook, holiday requests (where enabled), employee directory, team/role management (for those with access), and an audit trail for owners.
+- Membership uses roles (e.g. owner, manager-style roles, members). Some roles are "high up" and can send and manage invitations. Invitation types and labels come from the company's configured invite roles—never invent role keys.
+- Company news is visible to everyone in the company. Meetings have title, time range, optional location and video link, and notes. Direct messages go to one teammate (matched by email or display name). Holiday requests go to the company owner and depend on the member having a holiday allowance.
+- You only act through the tools provided. You cannot browse the web, read email, or change ManageMe settings (theme, sign-out, etc.) for the user. If they ask for something outside your tools, explain briefly and suggest what they can do in the app UI.
+
+Tone and style:
+- Write in a mix of informal and formal: friendly, clear, and professional.
+- Keep responses pleasant and a bit conversational without slang overload.
+- Be concise, but still warm and easy to talk to.
+
+Invitation workflow (mandatory):
+1. When the user wants to invite someone or asks you to create an invitation, you MUST call the list_invitation_roles tool first so you know the exact role \`name\` values for this company.
+2. Do NOT call create_invitation in the same model response as list_invitation_roles. After that tool returns, in a later step you may call create_invitation when the rules below are satisfied.
+3. Immediately before create_invitation, give a short recap (in the same turn as the tool call is fine): invitee name, the exact role \`name\` you will use from list_invitation_roles, and that invitations expire in the usual way.
+4. When to require an extra confirmation: If the user already clearly instructed you to create the invite with a specific person and role (e.g. "please invite Vicky as Sales", "invite Sam as member", "add them as Admin"), treat that as approval—after list_invitation_roles and your recap, call create_invitation without asking them to say "yes" again. If the request is vague, incomplete, or exploratory ("can we invite people?", "maybe add someone", no role or no name), ask for what's missing or ask them to confirm before you call create_invitation. If they decline or sound unsure, do not create.
+5. Never guess a role string for create_invitation; it must match a \`name\` from list_invitation_roles.
+6. After a successful create_invitation, always show the exact invitationId from the tool result in the reply.
+
+For other actions, follow tool descriptions and be concise.`;
+
+type AiChatStoredMessage = {
+    role: 'user' | 'assistant';
+    content: string;
+};
+
+type AiFunctionCallPayload = {
+    call_id: string;
+    name: string;
+    arguments: string;
+};
+
+/** Tool schemas forwarded to OpenAI; execution happens in the renderer after the API returns function calls. */
+const MANAGE_ME_AI_TOOLS: Record<string, unknown>[] = [
+    {
+        type: 'function',
+        name: 'get_company_snapshot',
+        description:
+            'Read-only: company name, your role, and counts (members, teams). Use before other tools if context is unclear.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+        type: 'function',
+        name: 'get_directory',
+        description:
+            'Read-only: list people in the company directory (name, email, role, status). Optional filter substring.',
+        parameters: {
+            type: 'object',
+            properties: {
+                filter: {
+                    type: 'string',
+                    description:
+                        'Optional: match name, email, role, or status (case-insensitive substring).',
+                },
+            },
+            additionalProperties: false,
+        },
+    },
+    {
+        type: 'function',
+        name: 'list_meetings',
+        description:
+            'Read-only: upcoming meetings (title, time range, organizer, location, link).',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+        type: 'function',
+        name: 'list_invitation_roles',
+        description:
+            'Read-only: invitation roles configured for this company (exact `name` values to pass to create_invitation, plus display label and whether the role is "high up" for invite permissions).',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+        type: 'function',
+        name: 'post_company_news',
+        description:
+            'Post a message to company news (visible to everyone in the company).',
+        parameters: {
+            type: 'object',
+            properties: {
+                body: {
+                    type: 'string',
+                    description: 'News text to post.',
+                },
+            },
+            required: ['body'],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: 'function',
+        name: 'schedule_meeting',
+        description:
+            'Create a company meeting. Use ISO 8601 datetimes in the device/local timezone offset, e.g. 2026-04-22T15:00:00.',
+        parameters: {
+            type: 'object',
+            properties: {
+                title: { type: 'string' },
+                start_iso: { type: 'string', description: 'ISO 8601 start time' },
+                end_iso: { type: 'string', description: 'ISO 8601 end time' },
+                location: { type: 'string', description: 'Optional' },
+                meeting_url: { type: 'string', description: 'Optional video URL' },
+                notes: { type: 'string', description: 'Optional agenda or notes' },
+            },
+            required: ['title', 'start_iso', 'end_iso'],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: 'function',
+        name: 'send_direct_message',
+        description:
+            'Send a direct message to a teammate. Identify them by email or display name (unique match required).',
+        parameters: {
+            type: 'object',
+            properties: {
+                peer_identifier: {
+                    type: 'string',
+                    description: 'Email or person name',
+                },
+                message: { type: 'string' },
+            },
+            required: ['peer_identifier', 'message'],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: 'function',
+        name: 'request_holiday_days',
+        description:
+            'Submit a holiday request to the company owner. Requires a holiday balance to be set.',
+        parameters: {
+            type: 'object',
+            properties: {
+                days: { type: 'integer', minimum: 1 },
+            },
+            required: ['days'],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: 'function',
+        name: 'create_invitation',
+        description:
+            'Create an invitation for someone to join the company. Requires permission to send invites. Call list_invitation_roles first to get valid `role` values (use each role\'s `name` field).',
+        parameters: {
+            type: 'object',
+            properties: {
+                invitee_name: { type: 'string' },
+                role: { type: 'string', description: 'Role key, e.g. member' },
+            },
+            required: ['invitee_name', 'role'],
+            additionalProperties: false,
+        },
+    },
+];
+
+function normalizeAiChatMessages(raw: unknown): AiChatStoredMessage[] {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    const out: AiChatStoredMessage[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+        const o = item as Record<string, unknown>;
+        const role = o.role;
+        const content = o.content;
+        if (
+            (role === 'user' || role === 'assistant') &&
+            typeof content === 'string'
+        ) {
+            const t = content.trim();
+            if (t) {
+                out.push({ role, content: t });
+            }
+        }
+    }
+    return out.slice(-AI_CHAT_MESSAGES_CAP);
+}
+
+function capAiMessages(messages: AiChatStoredMessage[]): AiChatStoredMessage[] {
+    if (messages.length <= AI_CHAT_MESSAGES_CAP) {
+        return messages;
+    }
+    return messages.slice(-AI_CHAT_MESSAGES_CAP);
+}
+
+function parseOpenAiChatResponse(data: unknown): {
+    id: string | null;
+    outputText: string | null;
+    functionCalls: AiFunctionCallPayload[];
+} {
+    if (!data || typeof data !== 'object') {
+        return { id: null, outputText: null, functionCalls: [] };
+    }
+    const d = data as Record<string, unknown>;
+    const id = typeof d.id === 'string' ? d.id : null;
+    /** Built only from `output` message items — avoids duplicating top-level `output_text`. */
+    let textFromOutput: string | null = null;
+    const functionCalls: AiFunctionCallPayload[] = [];
+    const output = d.output;
+    if (Array.isArray(output)) {
+        for (const item of output) {
+            if (!item || typeof item !== 'object') {
+                continue;
+            }
+            const o = item as Record<string, unknown>;
+            const typ = o.type;
+            if (typ === 'function_call') {
+                const callIdRaw = o.call_id ?? o.id;
+                const call_id =
+                    typeof callIdRaw === 'string' ? callIdRaw : '';
+                const name = typeof o.name === 'string' ? o.name : '';
+                const args =
+                    typeof o.arguments === 'string'
+                        ? o.arguments
+                        : JSON.stringify(o.arguments ?? {});
+                if (call_id && name) {
+                    functionCalls.push({ call_id, name, arguments: args });
+                }
+            }
+            if (typ === 'message' && o.role === 'assistant') {
+                const content = o.content;
+                if (Array.isArray(content)) {
+                    for (const c of content) {
+                        if (!c || typeof c !== 'object') {
+                            continue;
+                        }
+                        const p = c as Record<string, unknown>;
+                        if (
+                            p.type === 'output_text' &&
+                            typeof p.text === 'string' &&
+                            p.text.trim()
+                        ) {
+                            textFromOutput = textFromOutput
+                                ? `${textFromOutput}\n${p.text.trim()}`
+                                : p.text.trim();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const rootOutputText =
+        typeof d.output_text === 'string' && d.output_text.trim()
+            ? d.output_text.trim()
+            : null;
+    const outputText = textFromOutput?.trim()
+        ? textFromOutput.trim()
+        : rootOutputText;
+    return {
+        id,
+        outputText: outputText?.trim() || null,
+        functionCalls,
+    };
+}
+
+async function postManageMeChatApi(
+    idToken: string,
+    body: Record<string, unknown>
+): Promise<
+    | { ok: true; data: unknown }
+    | { ok: false; status: number; message: string }
+> {
+    let res: Response;
+    try {
+        res = await fetch(MANAGE_ME_CHAT_API, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify(body),
+        });
+    } catch (e) {
+        return {
+            ok: false,
+            status: 0,
+            message: e instanceof Error ? e.message : 'Network error',
+        };
+    }
+    const text = await res.text();
+    if (!res.ok) {
+        return {
+            ok: false,
+            status: res.status,
+            message: text.slice(0, 2000) || res.statusText,
+        };
+    }
+    try {
+        return { ok: true, data: JSON.parse(text) as unknown };
+    } catch {
+        return {
+            ok: false,
+            status: res.status,
+            message: 'Chat API returned invalid JSON.',
+        };
+    }
+}
 
 // =========================
 // Shared utility helpers
@@ -919,6 +1320,8 @@ const renderAuth = (): void => {
             <p id="auth-tagline" class="auth-subtitle">Your company manager—people, roles, and structure in one place.</p>
             <p id="auth-reset-hint" class="auth-reset-hint" hidden>Enter your email and we'll send a link to reset your password. Check your inbox and spam folder.</p>
 
+            ${themeToggleStripHtml()}
+
             <div id="auth-mode-toggle-wrap">
                 <div class="auth-toggle" role="tablist" aria-label="Authentication mode">
                     <button id="signin-toggle" class="toggle-btn active" type="button" role="tab" aria-selected="true">
@@ -1207,6 +1610,8 @@ const renderAuth = (): void => {
             setLoading(false);
         }
     });
+
+    syncThemePreferenceUi();
 };
 
 const getOnboardingStep = (): OnboardingStep => {
@@ -1280,6 +1685,7 @@ const renderOnboardingProfile = (): void => {
         <section class="auth-card onboarding-card">
             <h1 class="app-title">Welcome to ManageMe</h1>
             <p class="auth-subtitle">Set up your profile for this company manager. What should we call you?</p>
+            ${themeToggleStripHtml()}
 
             <form id="profile-form" class="auth-form">
                 <label class="form-label" for="display-name-input">Display name</label>
@@ -1342,6 +1748,8 @@ const renderOnboardingProfile = (): void => {
             profileSubmitBtn.textContent = 'Continue';
         }
     });
+
+    syncThemePreferenceUi();
 };
 
 const renderOnboardingInvite = (): void => {
@@ -1353,6 +1761,7 @@ const renderOnboardingInvite = (): void => {
         <section class="auth-card onboarding-card onboarding-card--wide">
             <h1 class="app-title">Join or create a company</h1>
             <p class="auth-subtitle">ManageMe is built to run a company together. Have an invite? Paste the <strong>invitation ID</strong>, then press <strong>Enter</strong> (invitations expire after <strong>${INVITE_EXPIRY_DAYS} days</strong>). Or start a new company workspace below.</p>
+            ${themeToggleStripHtml()}
 
             <div class="auth-form">
                 <label class="form-label" for="invitation-id-input">Invitation ID</label>
@@ -1395,6 +1804,8 @@ const renderOnboardingInvite = (): void => {
         inviteMessage.classList.remove('error');
         renderOnboardingCompany();
     });
+
+    syncThemePreferenceUi();
 };
 
 const renderOnboardingCompany = (): void => {
@@ -1407,6 +1818,7 @@ const renderOnboardingCompany = (): void => {
         <section class="auth-card onboarding-card onboarding-card--wide">
             <h1 class="app-title">Your company</h1>
             <p class="auth-subtitle">Tell us about the organization you will manage in ManageMe.</p>
+            ${themeToggleStripHtml()}
 
             <form id="company-form" class="auth-form">
                 <label class="form-label" for="company-name-input">Company name</label>
@@ -1553,6 +1965,8 @@ const renderOnboardingCompany = (): void => {
             companySubmitBtn.textContent = 'Create company';
         }
     });
+
+    syncThemePreferenceUi();
 };
 
 // =========================
@@ -1803,6 +2217,8 @@ const renderDashboard = async (user: User): Promise<void> => {
                             ? '<button type="button" id="transfer-ownership-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">Transfer ownership</button>'
                             : ''
                     }
+                    <button type="button" id="theme-cycle-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">Theme</button>
+                    <button type="button" id="open-ai-assistant-btn" class="settings-menu-item settings-menu-item--neutral" role="menuitem">AI assistant</button>
                     <button type="button" id="sign-out-btn" class="settings-menu-item" role="menuitem">Sign out</button>
                 </div>
             </div>
@@ -1954,8 +2370,28 @@ const renderDashboard = async (user: User): Promise<void> => {
                 <button type="button" id="meeting-edit-cancel-btn" class="modal-close-btn">Cancel</button>
             </div>
         </div>
+
+        <div id="ai-chat-modal" class="modal-backdrop" hidden>
+            <div class="modal-card modal-card--wide ai-chat-card" role="dialog" aria-modal="true" aria-labelledby="ai-chat-title">
+                <h2 id="ai-chat-title" class="modal-title">AI assistant</h2>
+                <p class="modal-subtitle">Ask about your company or let the assistant run actions you allow (news, meetings, messages, holidays, invites). Chat is saved to your account.</p>
+                <div id="ai-chat-messages" class="ai-chat-messages" aria-live="polite"></div>
+                <form id="ai-chat-form" class="ai-chat-form">
+                    <label class="sr-only" for="ai-chat-input">Message</label>
+                    <textarea id="ai-chat-input" class="form-input form-textarea ai-chat-input" rows="2" maxlength="8000" placeholder="Message the assistant…" autocomplete="off"></textarea>
+                    <div class="ai-chat-actions">
+                        <button type="submit" id="ai-chat-send-btn" class="submit-btn submit-btn--compact">Send</button>
+                        <button type="button" id="ai-chat-clear-btn" class="modal-close-btn ai-chat-clear-btn">Clear history</button>
+                    </div>
+                </form>
+                <p id="ai-chat-status" class="auth-message ai-chat-status" aria-live="polite"></p>
+                <button type="button" id="ai-chat-close-btn" class="modal-close-btn">Close</button>
+            </div>
+        </div>
     </div>
 `;
+
+    syncThemePreferenceUi();
 
     const settingsBtn = document.getElementById(
         'settings-btn'
@@ -2074,6 +2510,626 @@ const renderDashboard = async (user: User): Promise<void> => {
         : [];
     let latestInviteDocs: QueryDocumentSnapshot[] = [];
     let inviteManageActionBusy = false;
+
+    const aiChatRef = doc(db, USER_AI_CHATS_COLLECTION, user.uid);
+    let aiThreadMessages: AiChatStoredMessage[] = [];
+    let aiLastResponseId: string | null = null;
+
+    const persistAiChatState = async (): Promise<void> => {
+        await setDoc(
+            aiChatRef,
+            {
+                messages: capAiMessages(aiThreadMessages),
+                lastResponseId: aiLastResponseId,
+                updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+        );
+    };
+
+    const renderAiChatThread = (): void => {
+        const wrap = document.getElementById(
+            'ai-chat-messages'
+        ) as HTMLDivElement | null;
+        if (!wrap) {
+            return;
+        }
+        if (aiThreadMessages.length === 0) {
+            wrap.innerHTML =
+                '<p class="ai-chat-empty">No messages yet. Ask a question or request an action.</p>';
+            return;
+        }
+        wrap.innerHTML = aiThreadMessages
+            .map((m) => {
+                const roleClass =
+                    m.role === 'user'
+                        ? 'ai-chat-bubble--user'
+                        : 'ai-chat-bubble--assistant';
+                const label = m.role === 'user' ? 'You' : 'Assistant';
+                const isAssistant = m.role === 'assistant';
+                const bodyHtml = isAssistant
+                    ? assistantMarkdownToSafeHtml(m.content)
+                    : escapeHtml(m.content);
+                const textClass = isAssistant
+                    ? 'ai-chat-bubble-text ai-chat-bubble-text--md'
+                    : 'ai-chat-bubble-text';
+                return `<div class="ai-chat-bubble ${roleClass}"><span class="ai-chat-bubble-label">${label}</span><div class="${textClass}">${bodyHtml}</div></div>`;
+            })
+            .join('');
+        wrap.scrollTop = wrap.scrollHeight;
+    };
+
+    const findPeerUidForAi = (
+        identifier: string
+    ): { uid: string | null; error?: string } => {
+        const t = identifier.trim().toLowerCase();
+        if (!t) {
+            return { uid: null, error: 'peer_identifier is empty' };
+        }
+        const byEmail = latestEmployees.find(
+            (e) => (e.email ?? '').toLowerCase() === t
+        );
+        if (byEmail) {
+            if ((byEmail.status ?? 'active') === 'offboarded') {
+                return { uid: null, error: 'That person is offboarded.' };
+            }
+            return { uid: byEmail.uid };
+        }
+        const matches = latestEmployees.filter((e) => {
+            if ((e.status ?? 'active') === 'offboarded') {
+                return false;
+            }
+            const name = memberDisplayName(e).toLowerCase();
+            return (
+                name.includes(t) ||
+                t.split(/\s+/).every((w) => w.length > 0 && name.includes(w))
+            );
+        });
+        if (matches.length === 1) {
+            return { uid: matches[0].uid };
+        }
+        if (matches.length === 0) {
+            return {
+                uid: null,
+                error: 'No teammate matched that name or email.',
+            };
+        }
+        const names = matches.map((m) => memberDisplayName(m)).join(', ');
+        return {
+            uid: null,
+            error: `Multiple people matched. Be more specific: ${names}`,
+        };
+    };
+
+    const executeDashboardAiTool = async (
+        name: string,
+        argsJson: string
+    ): Promise<string> => {
+        let args: Record<string, unknown>;
+        try {
+            args = JSON.parse(argsJson) as Record<string, unknown>;
+        } catch {
+            return JSON.stringify({ ok: false, error: 'Invalid JSON arguments' });
+        }
+        const actorLabel =
+            user.displayName?.trim() || user.email?.split('@')[0] || 'Member';
+
+        if (name === 'get_company_snapshot') {
+            if (!companyContext) {
+                return JSON.stringify({
+                    ok: true,
+                    companyName: null,
+                    note: 'You are not in a company workspace yet.',
+                });
+            }
+            return JSON.stringify({
+                ok: true,
+                companyName: companyContext.companyName,
+                yourRole: companyContext.role,
+                memberCount: latestEmployees.length,
+                teamCount: latestTeams.length,
+                canSendInvites: companyContext.canSendInvites,
+            });
+        }
+
+        if (name === 'get_directory') {
+            if (!companyContext) {
+                return JSON.stringify({ ok: false, error: 'No company' });
+            }
+            const filterRaw =
+                typeof args.filter === 'string'
+                    ? args.filter.trim().toLowerCase()
+                    : '';
+            let rows = latestEmployees.map((e) => ({
+                name: memberDisplayName(e),
+                email: e.email ?? '',
+                role: formatRoleForDisplay(e.role),
+                status: statusDisplayLabel(e.status ?? 'active'),
+            }));
+            if (filterRaw) {
+                rows = rows.filter(
+                    (r) =>
+                        r.name.toLowerCase().includes(filterRaw) ||
+                        r.email.toLowerCase().includes(filterRaw) ||
+                        r.role.toLowerCase().includes(filterRaw) ||
+                        r.status.toLowerCase().includes(filterRaw)
+                );
+            }
+            return JSON.stringify({ ok: true, people: rows });
+        }
+
+        if (name === 'list_meetings') {
+            if (!companyContext) {
+                return JSON.stringify({ ok: false, error: 'No company' });
+            }
+            try {
+                const mq = query(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        MEETINGS_SUBCOLLECTION
+                    ),
+                    orderBy('startAt', 'asc'),
+                    limit(MEETINGS_QUERY_LIMIT)
+                );
+                const snap = await getDocs(mq);
+                const list = snap.docs.map((d) => {
+                    const x = d.data();
+                    return {
+                        id: d.id,
+                        title: typeof x.title === 'string' ? x.title : '',
+                        range: meetingRangeLabel(x.startAt, x.endAt),
+                        organizer:
+                            typeof x.organizerLabel === 'string'
+                                ? x.organizerLabel
+                                : '',
+                        location:
+                            typeof x.location === 'string' ? x.location : '',
+                        url:
+                            typeof x.meetingUrl === 'string' ? x.meetingUrl : '',
+                    };
+                });
+                return JSON.stringify({ ok: true, meetings: list });
+            } catch (err) {
+                return JSON.stringify({
+                    ok: false,
+                    error: friendlyFirestoreError(err, 'Could not list meetings.'),
+                });
+            }
+        }
+
+        if (name === 'list_invitation_roles') {
+            if (!companyContext) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'No company workspace.',
+                });
+            }
+            const roles = latestInviteRoleEntries.map((e) => ({
+                name: e.name,
+                display_name: formatRoleForDisplay(e.name),
+                high_up: e.highUp,
+            }));
+            return JSON.stringify({
+                ok: true,
+                roles,
+                note: 'Use each role\'s `name` (lowercase keys like member) as the role argument to create_invitation.',
+            });
+        }
+
+        if (!companyContext) {
+            return JSON.stringify({
+                ok: false,
+                error: 'Join or create a company before using this action.',
+            });
+        }
+
+        if (name === 'post_company_news') {
+            const body =
+                typeof args.body === 'string' ? args.body.trim() : '';
+            if (!body) {
+                return JSON.stringify({ ok: false, error: 'body is required' });
+            }
+            if (body.length > NEWS_BODY_MAX_LENGTH) {
+                return JSON.stringify({ ok: false, error: 'News text too long' });
+            }
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        COMPANY_NEWS_SUBCOLLECTION
+                    ),
+                    {
+                        authorUid: user.uid,
+                        authorLabel: actorLabel,
+                        body,
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'news_posted',
+                        summary: `${actorLabel} posted company news (AI)`,
+                        detail:
+                            body.length > 180
+                                ? `${body.slice(0, 180).trim()}…`
+                                : body,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                return JSON.stringify({
+                    ok: true,
+                    message: 'Posted to company news.',
+                });
+            } catch (err) {
+                return JSON.stringify({
+                    ok: false,
+                    error: friendlyFirestoreError(err, 'Could not post news.'),
+                });
+            }
+        }
+
+        if (name === 'schedule_meeting') {
+            const title =
+                typeof args.title === 'string' ? args.title.trim() : '';
+            const startIso =
+                typeof args.start_iso === 'string' ? args.start_iso.trim() : '';
+            const endIso =
+                typeof args.end_iso === 'string' ? args.end_iso.trim() : '';
+            if (!title || !startIso || !endIso) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'title, start_iso, and end_iso are required',
+                });
+            }
+            const startD = new Date(startIso);
+            const endD = new Date(endIso);
+            if (Number.isNaN(startD.getTime()) || Number.isNaN(endD.getTime())) {
+                return JSON.stringify({ ok: false, error: 'Invalid dates' });
+            }
+            if (endD.getTime() <= startD.getTime()) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'End must be after start',
+                });
+            }
+            const loc =
+                typeof args.location === 'string' ? args.location.trim() : '';
+            const urlRaw =
+                typeof args.meeting_url === 'string'
+                    ? args.meeting_url.trim()
+                    : '';
+            const notes =
+                typeof args.notes === 'string' ? args.notes.trim() : '';
+            if (loc.length > MEETING_LOCATION_MAX_LENGTH) {
+                return JSON.stringify({ ok: false, error: 'Location too long' });
+            }
+            if (urlRaw.length > MEETING_URL_MAX_LENGTH) {
+                return JSON.stringify({ ok: false, error: 'URL too long' });
+            }
+            if (notes.length > MEETING_NOTES_MAX_LENGTH) {
+                return JSON.stringify({ ok: false, error: 'Notes too long' });
+            }
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        MEETINGS_SUBCOLLECTION
+                    ),
+                    {
+                        organizerUid: user.uid,
+                        organizerLabel: actorLabel,
+                        title,
+                        startAt: Timestamp.fromDate(startD),
+                        endAt: Timestamp.fromDate(endD),
+                        location: loc || null,
+                        meetingUrl: urlRaw || null,
+                        notes: notes || null,
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'meeting_created',
+                        summary: `${actorLabel} scheduled a meeting (AI)`,
+                        detail: title,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                return JSON.stringify({ ok: true, message: 'Meeting scheduled.' });
+            } catch (err) {
+                return JSON.stringify({
+                    ok: false,
+                    error: friendlyFirestoreError(
+                        err,
+                        'Could not create meeting.'
+                    ),
+                });
+            }
+        }
+
+        if (name === 'send_direct_message') {
+            const peerId =
+                typeof args.peer_identifier === 'string'
+                    ? args.peer_identifier
+                    : '';
+            const message =
+                typeof args.message === 'string' ? args.message.trim() : '';
+            if (!peerId || !message) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'peer_identifier and message are required',
+                });
+            }
+            if (message.length > MEMBER_MESSAGE_BODY_MAX_LENGTH) {
+                return JSON.stringify({ ok: false, error: 'Message too long' });
+            }
+            const resolved = findPeerUidForAi(peerId);
+            if (!resolved.uid) {
+                return JSON.stringify({
+                    ok: false,
+                    error: resolved.error ?? 'Could not resolve teammate',
+                });
+            }
+            const peerEmp = latestEmployees.find(
+                (e) => e.uid === resolved.uid
+            );
+            if (!peerEmp) {
+                return JSON.stringify({ ok: false, error: 'Peer not found' });
+            }
+            const toLabel = memberDisplayName(peerEmp);
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        MEMBER_MESSAGES_SUBCOLLECTION
+                    ),
+                    {
+                        fromUid: user.uid,
+                        fromLabel: actorLabel,
+                        toUid: resolved.uid,
+                        toLabel,
+                        body: message,
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                return JSON.stringify({
+                    ok: true,
+                    message: `Direct message sent to ${toLabel}.`,
+                });
+            } catch (err) {
+                return JSON.stringify({
+                    ok: false,
+                    error: friendlyFirestoreError(err, 'Could not send message.'),
+                });
+            }
+        }
+
+        if (name === 'request_holiday_days') {
+            const daysRaw = args.days;
+            const days =
+                typeof daysRaw === 'number' && Number.isFinite(daysRaw)
+                    ? Math.floor(daysRaw)
+                    : 0;
+            if (days <= 0) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'days must be positive',
+                });
+            }
+            const me = latestEmployees.find((emp) => emp.uid === user.uid);
+            if (
+                !me ||
+                typeof me.holidayDays !== 'number' ||
+                !Number.isFinite(me.holidayDays)
+            ) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'Holiday allowance is not set for you.',
+                });
+            }
+            if (days > me.holidayDays) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'Request exceeds remaining holiday balance.',
+                });
+            }
+            try {
+                await addDoc(
+                    collection(
+                        db,
+                        'companies',
+                        companyContext.companyId,
+                        HOLIDAY_REQUESTS_SUBCOLLECTION
+                    ),
+                    {
+                        requesterUid: user.uid,
+                        requesterLabel: actorLabel,
+                        days,
+                        status: 'pending',
+                        createdAt: serverTimestamp(),
+                    }
+                );
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'holiday_requested',
+                        summary: `${actorLabel} requested ${days} holiday day(s) (AI)`,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                return JSON.stringify({
+                    ok: true,
+                    message: 'Holiday request submitted.',
+                });
+            } catch (err) {
+                return JSON.stringify({
+                    ok: false,
+                    error: friendlyFirestoreError(
+                        err,
+                        'Could not submit holiday request.'
+                    ),
+                });
+            }
+        }
+
+        if (name === 'create_invitation') {
+            if (!companyContext.canSendInvites) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'Your role cannot create invitations.',
+                });
+            }
+            const inviteeName =
+                typeof args.invitee_name === 'string'
+                    ? args.invitee_name.trim()
+                    : '';
+            const roleRaw =
+                typeof args.role === 'string' ? args.role.trim() : '';
+            if (!inviteeName || !roleRaw) {
+                return JSON.stringify({
+                    ok: false,
+                    error: 'invitee_name and role are required',
+                });
+            }
+            const allowed = latestInviteRoleEntries.map((e) =>
+                e.name.trim().toLowerCase()
+            );
+            if (!allowed.includes(roleRaw.toLowerCase())) {
+                return JSON.stringify({
+                    ok: false,
+                    error: `Role must be one of: ${latestInviteRoleEntries.map((e) => e.name).join(', ')}`,
+                });
+            }
+            const roleKey =
+                latestInviteRoleEntries.find(
+                    (e) => e.name.trim().toLowerCase() === roleRaw.toLowerCase()
+                )?.name ?? roleRaw;
+            try {
+                const expiryMs =
+                    Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+                const expiresAt = Timestamp.fromMillis(expiryMs);
+                const docRef = await addDoc(collection(db, INVITES_COLLECTION), {
+                    companyId: companyContext.companyId,
+                    role: roleKey,
+                    inviteeName,
+                    createdByUid: user.uid,
+                    createdAt: serverTimestamp(),
+                    expiresAt,
+                    used: false,
+                });
+                try {
+                    await appendAuditEvent(companyContext.companyId, {
+                        actorUid: user.uid,
+                        actorLabel,
+                        action: 'invite_created',
+                        summary: `Invitation created for ${inviteeName} (AI)`,
+                        detail: `Role: ${formatRoleForDisplay(roleKey)}`,
+                    });
+                } catch {
+                    /* best-effort */
+                }
+                return JSON.stringify({
+                    ok: true,
+                    invitationId: docRef.id,
+                    message:
+                        'Invitation created. Share the invitation ID with your teammate.',
+                });
+            } catch (err) {
+                return JSON.stringify({
+                    ok: false,
+                    error: friendlyFirestoreError(
+                        err,
+                        'Could not create invitation.'
+                    ),
+                });
+            }
+        }
+
+        return JSON.stringify({ ok: false, error: `Unknown tool: ${name}` });
+    };
+
+    const runAiAssistantTurn = async (userText: string): Promise<string> => {
+        const idToken = await user.getIdToken();
+        let responseId = aiLastResponseId ?? undefined;
+        const nextInput: Record<string, unknown>[] = [
+            {
+                type: 'message',
+                role: 'user',
+                content: userText,
+            },
+        ];
+        let assistantText = '';
+
+        for (let step = 0; step < AI_TOOL_LOOP_MAX; step++) {
+            const body: Record<string, unknown> = {
+                model: DEFAULT_AI_MODEL,
+                instructions: MANAGE_ME_AI_INSTRUCTIONS,
+                input: nextInput,
+                tools: MANAGE_ME_AI_TOOLS,
+            };
+            if (responseId) {
+                body.previous_response_id = responseId;
+            }
+
+            const result = await postManageMeChatApi(idToken, body);
+            if (result.ok === false) {
+                throw new Error(
+                    result.status
+                        ? `Chat API ${result.status}: ${result.message}`
+                        : result.message
+                );
+            }
+
+            const parsed = parseOpenAiChatResponse(result.data);
+            if (parsed.id) {
+                responseId = parsed.id;
+                aiLastResponseId = parsed.id;
+            }
+
+            if (parsed.functionCalls.length > 0) {
+                nextInput.length = 0;
+                for (const fc of parsed.functionCalls) {
+                    const output = await executeDashboardAiTool(
+                        fc.name,
+                        fc.arguments
+                    );
+                    nextInput.push({
+                        type: 'function_call_output',
+                        call_id: fc.call_id,
+                        output,
+                    });
+                }
+                continue;
+            }
+
+            assistantText =
+                parsed.outputText?.trim() ||
+                'Done. (The model returned no text.)';
+            break;
+        }
+
+        if (!assistantText) {
+            assistantText =
+                'Stopped after too many tool steps. Try a simpler request.';
+        }
+        return assistantText;
+    };
 
     const directorySearch = document.getElementById(
         'directory-search'
@@ -4341,6 +5397,7 @@ const renderDashboard = async (user: User): Promise<void> => {
     const openMenu = (): void => {
         settingsMenu.hidden = false;
         settingsBtn.setAttribute('aria-expanded', 'true');
+        syncThemePreferenceUi();
     };
 
     settingsBtn.addEventListener('click', (e) => {
@@ -4355,6 +5412,155 @@ const renderDashboard = async (user: User): Promise<void> => {
     signOutBtn.addEventListener('click', async () => {
         closeMenu();
         await signOut(auth);
+    });
+
+    const openAiAssistantBtn = document.getElementById(
+        'open-ai-assistant-btn'
+    ) as HTMLButtonElement | null;
+    const aiChatModalEl = document.getElementById(
+        'ai-chat-modal'
+    ) as HTMLDivElement | null;
+    const aiChatFormEl = document.getElementById(
+        'ai-chat-form'
+    ) as HTMLFormElement | null;
+    const aiChatInputEl = document.getElementById(
+        'ai-chat-input'
+    ) as HTMLTextAreaElement | null;
+    const aiChatSendBtnEl = document.getElementById(
+        'ai-chat-send-btn'
+    ) as HTMLButtonElement | null;
+    const aiChatClearBtnEl = document.getElementById(
+        'ai-chat-clear-btn'
+    ) as HTMLButtonElement | null;
+    const aiChatStatusEl = document.getElementById(
+        'ai-chat-status'
+    ) as HTMLParagraphElement | null;
+    const aiChatCloseBtnEl = document.getElementById(
+        'ai-chat-close-btn'
+    ) as HTMLButtonElement | null;
+
+    openAiAssistantBtn?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        closeMenu();
+        if (!aiChatModalEl) {
+            return;
+        }
+        try {
+            const snap = await getDoc(aiChatRef);
+            if (snap.exists()) {
+                const d = snap.data();
+                aiThreadMessages = normalizeAiChatMessages(d.messages);
+                const lid = d.lastResponseId;
+                aiLastResponseId = typeof lid === 'string' ? lid : null;
+            } else {
+                aiThreadMessages = [];
+                aiLastResponseId = null;
+            }
+        } catch {
+            aiThreadMessages = [];
+            aiLastResponseId = null;
+        }
+        renderAiChatThread();
+        if (aiChatStatusEl) {
+            aiChatStatusEl.textContent = '';
+            aiChatStatusEl.classList.remove('error', 'success');
+        }
+        aiChatModalEl.hidden = false;
+        aiChatInputEl?.focus();
+    });
+
+    aiChatCloseBtnEl?.addEventListener('click', () => {
+        if (aiChatModalEl) {
+            aiChatModalEl.hidden = true;
+        }
+    });
+
+    aiChatModalEl?.addEventListener('click', (ev) => {
+        if (ev.target === aiChatModalEl) {
+            aiChatModalEl.hidden = true;
+        }
+    });
+
+    aiChatClearBtnEl?.addEventListener('click', async () => {
+        if (
+            !window.confirm(
+                'Clear all AI assistant messages and reset the conversation with the model?'
+            )
+        ) {
+            return;
+        }
+        aiThreadMessages = [];
+        aiLastResponseId = null;
+        renderAiChatThread();
+        if (aiChatStatusEl) {
+            aiChatStatusEl.textContent = '';
+            aiChatStatusEl.classList.remove('error');
+        }
+        try {
+            await setDoc(
+                aiChatRef,
+                {
+                    messages: [],
+                    lastResponseId: null,
+                    updatedAt: serverTimestamp(),
+                },
+                { merge: true }
+            );
+        } catch (err) {
+            if (aiChatStatusEl) {
+                aiChatStatusEl.textContent = friendlyFirestoreError(
+                    err,
+                    'Could not clear chat history.'
+                );
+                aiChatStatusEl.classList.add('error');
+            }
+        }
+    });
+
+    aiChatFormEl?.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        if (!aiChatInputEl || !aiChatStatusEl) {
+            return;
+        }
+        const text = aiChatInputEl.value.trim();
+        if (!text) {
+            return;
+        }
+        aiChatInputEl.value = '';
+        aiThreadMessages.push({ role: 'user', content: text });
+        aiThreadMessages = capAiMessages(aiThreadMessages);
+        renderAiChatThread();
+        try {
+            await persistAiChatState();
+        } catch (persistErr) {
+            aiChatStatusEl.textContent = friendlyFirestoreError(
+                persistErr,
+                'Could not save your message.'
+            );
+            aiChatStatusEl.classList.add('error');
+            return;
+        }
+        aiChatStatusEl.classList.remove('error');
+        aiChatStatusEl.textContent = 'Thinking…';
+        if (aiChatSendBtnEl) {
+            aiChatSendBtnEl.disabled = true;
+        }
+        try {
+            const reply = await runAiAssistantTurn(text);
+            aiThreadMessages.push({ role: 'assistant', content: reply });
+            aiThreadMessages = capAiMessages(aiThreadMessages);
+            renderAiChatThread();
+            await persistAiChatState();
+            aiChatStatusEl.textContent = '';
+        } catch (err) {
+            aiChatStatusEl.textContent =
+                err instanceof Error ? err.message : 'Request failed.';
+            aiChatStatusEl.classList.add('error');
+        } finally {
+            if (aiChatSendBtnEl) {
+                aiChatSendBtnEl.disabled = false;
+            }
+        }
     });
 
     const closeInviteModal = (): void => {

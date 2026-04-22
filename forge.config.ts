@@ -85,7 +85,7 @@ const config: ForgeConfig = {
             devContentSecurityPolicy:
                 "default-src 'self' 'unsafe-inline' data:; " +
                 "script-src 'self' 'unsafe-eval' 'unsafe-inline' data:; " +
-                "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com;",
+                "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://manage-me-api.vercel.app;",
             renderer: {
                 config: rendererConfig,
                 entryPoints: [

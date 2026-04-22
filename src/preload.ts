@@ -8,6 +8,9 @@ type UpdatePayload = {
 };
 
 contextBridge.exposeInMainWorld('manageMeDesktop', {
+    setWindowBackgroundColor: (hex: string) => {
+        ipcRenderer.send('set-window-background', hex);
+    },
     onUpdateReady: (callback: (payload: UpdatePayload) => void) => {
         const handler = (_event: unknown, payload: UpdatePayload) =>
             callback(payload);
