@@ -38,6 +38,10 @@ import {
 } from 'firebase/firestore';
 import type { QueryDocumentSnapshot, Unsubscribe } from 'firebase/firestore';
 
+// =========================
+// Core types and IPC bridge
+// =========================
+
 type AuthMode = 'signin' | 'signup';
 
 type AppUpdatePayload = {
@@ -86,6 +90,10 @@ const MEMBER_MESSAGE_BODY_MAX_LENGTH = 4000;
 const DM_THREAD_QUERY_LIMIT = 100;
 const DM_NOTIFICATION_BODY_MAX = 180;
 const WELCOME_COMPANY_NEWS_AUTHOR = 'The ManageMe Team';
+
+// =========================
+// Shared utility helpers
+// =========================
 
 function memberMessageDocSortKey(d: QueryDocumentSnapshot): number {
     const x = d.data().createdAt;
@@ -361,6 +369,10 @@ function friendlyInviteAcceptError(error: unknown): string {
     }
     return 'Could not join with this invitation. Check the ID and try again.';
 }
+
+// =========================
+// Company/member data models
+// =========================
 
 type EmployeeStatus = 'active' | 'suspended' | 'offboarded';
 
@@ -815,6 +827,10 @@ async function acceptFirestoreInviteAndJoinCompany(
     }
 }
 
+// =========================
+// Session + onboarding state
+// =========================
+
 const PENDING_PROFILE_KEY = 'manageme_pending_profile';
 const ONBOARDING_STEP_KEY = 'manageme_onboarding_step';
 const ONBOARDING_INVITATION_KEY = 'manageme_onboarding_invitation';
@@ -888,6 +904,10 @@ const showUpdateToast = (payload: AppUpdatePayload): void => {
 window.manageMeDesktop?.onUpdateReady((payload) => {
     showUpdateToast(payload);
 });
+
+// =========================
+// Authentication screen
+// =========================
 
 const renderAuth = (): void => {
     cleanupDashboardListeners();
@@ -1200,6 +1220,10 @@ const getOnboardingStep = (): OnboardingStep => {
 const setOnboardingStep = (step: OnboardingStep): void => {
     sessionStorage.setItem(ONBOARDING_STEP_KEY, step);
 };
+
+// =========================
+// Onboarding flow screens
+// =========================
 
 const tryAcceptInvitationFromOnboarding = async (
     rawToken: string,
@@ -1530,6 +1554,10 @@ const renderOnboardingCompany = (): void => {
         }
     });
 };
+
+// =========================
+// Main dashboard
+// =========================
 
 const renderDashboard = async (user: User): Promise<void> => {
     cleanupDashboardListeners();
@@ -4960,6 +4988,10 @@ const renderDashboard = async (user: User): Promise<void> => {
 
     settingsMenu.addEventListener('click', (e) => e.stopPropagation());
 };
+
+// =========================
+// Final bootstrapping
+// =========================
 
 function escapeHtml(text: string): string {
     const div = document.createElement('div');
